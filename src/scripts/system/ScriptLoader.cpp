@@ -21,6 +21,8 @@ extern void AddSC_generic_creature();
 // -- Custom --
 extern void AddSC_custom_example();
 extern void AddSC_custom_gossip_codebox();
+extern void AddSC_custom_instant_70_uncommon();
+extern void AddSC_custom_transfer();
 extern void AddSC_event_reward();
 extern void AddSC_enchant_npc();
 extern void AddSC_boss_easter_event();
@@ -306,6 +308,7 @@ extern void AddSC_boss_vazruden_the_herald();
 //Hellfire Peninsula
 extern void AddSC_boss_doomlordkazzak();
 extern void AddSC_hellfire_peninsula();
+extern void AddSC_stair_of_destiny();
 
 //Hillsbrad Foothills
 //Hinterlands
@@ -412,6 +415,7 @@ extern void AddSC_boss_amnennar_the_coldbringer();
 extern void AddSC_razorfen_kraul();
 
 //Redridge Mountains
+extern void AddSC_redridge_mountains();
 //Ruins of Ahn'Qiraj
 extern void AddSC_boss_ayamiss();
 extern void AddSC_larva();
@@ -652,6 +656,8 @@ void AddScripts()
     // -- Custom --
     AddSC_custom_example();
     AddSC_custom_gossip_codebox();
+    AddSC_custom_instant_70_uncommon();
+    AddSC_custom_transfer();
     AddSC_event_reward();
     AddSC_enchant_npc();
     AddSC_boss_easter_event();
@@ -933,6 +939,7 @@ void AddScripts()
     //Hellfire Peninsula
     AddSC_boss_doomlordkazzak();
     AddSC_hellfire_peninsula();
+    AddSC_stair_of_destiny();
 
     //Hillsbrad Foothills
     //Hinterlands
@@ -1039,6 +1046,7 @@ void AddScripts()
     AddSC_razorfen_kraul();
 
     //Redridge Mountains
+    AddSC_redridge_mountains();
     //Ruins of Ahn'Qiraj
     AddSC_boss_ayamiss();
     AddSC_larva();

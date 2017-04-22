@@ -87,6 +87,7 @@ bool SqlConnection::ExecuteStmt(int nIndex, const SqlStmtParameters& id )
 
     //get prepared statement object
     SqlPreparedStatement * pStmt = GetStmt(nIndex);
+    ASSERT(pStmt); //it will be better for server to crash than to keep working with database problems
     //bind parameters
     pStmt->bind(id);
     //execute statement
@@ -324,7 +325,7 @@ QueryResultAutoPtr Database::PQuery(const char *format,...)
 
 QueryNamedResult* Database::PQueryNamed(const char *format,...)
 {
-    if(!format) return NULL;
+    if(!format) return nullptr;
 
     va_list ap;
     char szQuery [MAX_QUERY_LEN];
@@ -335,7 +336,7 @@ QueryNamedResult* Database::PQueryNamed(const char *format,...)
     if(res==-1)
     {
         sLog.outLog(LOG_DEFAULT, "ERROR: SQL Query truncated (and not execute) for format: %s",format);
-        return false;
+        return nullptr;
     }
 
     return QueryNamed(szQuery);

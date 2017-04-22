@@ -72,14 +72,14 @@ struct boss_darkweaver_sythAI : public ScriptedAI
     uint32 shadowshock_timer;
     uint32 chainlightning_timer;
     //add variablen
-	uint64 elementar[16];
-	uint64 elementara[16];
-	uint64 elementarb[16];
-	uint64 elementarc[16];
-	uint32 anzahl_adds;
-	uint32 anzahl_addsa;
-	uint32 anzahl_addsb;
-	uint32 anzahl_addsc;
+    uint64 elementar[16];
+    uint64 elementara[16];
+    uint64 elementarb[16];
+    uint64 elementarc[16];
+    uint32 anzahl_adds;
+    uint32 anzahl_addsa;
+    uint32 anzahl_addsb;
+    uint32 anzahl_addsc;
 
     bool summon90;
     bool summon50;
@@ -88,16 +88,16 @@ struct boss_darkweaver_sythAI : public ScriptedAI
 
     void Reset()
     {
-        flameshock_timer = 2000;
-        arcaneshock_timer = 4000;
-        frostshock_timer = 6000;
-        shadowshock_timer = 8000;
-        chainlightning_timer = 15000;
+        flameshock_timer = 4000;
+        arcaneshock_timer = 8000;
+        frostshock_timer = 12000;
+        shadowshock_timer = 16000;
+        chainlightning_timer = urand(6000, 9000);
         //Addcounter auf 0 setzen
-		anzahl_adds=0;
-		anzahl_addsa=0;
-		anzahl_addsb=0;
-		anzahl_addsc=0;
+        anzahl_adds=0;
+        anzahl_addsa=0;
+        anzahl_addsb=0;
+        anzahl_addsc=0;
 
         summon90 = false;
         summon50 = false;
@@ -174,19 +174,19 @@ struct boss_darkweaver_sythAI : public ScriptedAI
         DoCast(m_creature,SPELL_SUMMON_SYTH_FROST,true);    //left
         DoCast(m_creature,SPELL_SUMMON_SYTH_SHADOW,true);   //right*/
 
-        //neuer spawn um den despawn handhaben zu können:	 
-		
-		Creature *ele = m_creature->SummonCreature(19203, me->GetPositionX()+5, me->GetPositionY(), me->GetPositionZ(), 0, TEMPSUMMON_TIMED_DESPAWN_OUT_OF_COMBAT, 1000);
-		anzahl_adds++;
-		elementar[anzahl_adds] = ele->GetGUID();
-		Creature *elea = m_creature->SummonCreature(19205, me->GetPositionX(), me->GetPositionY()-5, me->GetPositionZ(), 0, TEMPSUMMON_TIMED_DESPAWN_OUT_OF_COMBAT, 1000);
-		anzahl_addsa++;
-		elementara[anzahl_addsa] = elea->GetGUID();
-		Creature *eleb = m_creature->SummonCreature(19204, me->GetPositionX()-5, me->GetPositionY(), me->GetPositionZ(), 0, TEMPSUMMON_TIMED_DESPAWN_OUT_OF_COMBAT, 1000);
-		anzahl_addsb++;
-		elementarb[anzahl_addsb] = eleb->GetGUID();
-		Creature *elec = m_creature->SummonCreature(19206, me->GetPositionX(), me->GetPositionY()+5, me->GetPositionZ(), 0, TEMPSUMMON_TIMED_DESPAWN_OUT_OF_COMBAT, 1000);
-		anzahl_addsc++;
+        //neuer spawn um den despawn handhaben zu kÃ¶nnen:     
+        
+        Creature *ele = m_creature->SummonCreature(19203, me->GetPositionX()+5, me->GetPositionY(), me->GetPositionZ(), 0, TEMPSUMMON_TIMED_DESPAWN_OUT_OF_COMBAT, 1000);
+        anzahl_adds++;
+        elementar[anzahl_adds] = ele->GetGUID();
+        Creature *elea = m_creature->SummonCreature(19205, me->GetPositionX(), me->GetPositionY()-5, me->GetPositionZ(), 0, TEMPSUMMON_TIMED_DESPAWN_OUT_OF_COMBAT, 1000);
+        anzahl_addsa++;
+        elementara[anzahl_addsa] = elea->GetGUID();
+        Creature *eleb = m_creature->SummonCreature(19204, me->GetPositionX()-5, me->GetPositionY(), me->GetPositionZ(), 0, TEMPSUMMON_TIMED_DESPAWN_OUT_OF_COMBAT, 1000);
+        anzahl_addsb++;
+        elementarb[anzahl_addsb] = eleb->GetGUID();
+        Creature *elec = m_creature->SummonCreature(19206, me->GetPositionX(), me->GetPositionY()+5, me->GetPositionZ(), 0, TEMPSUMMON_TIMED_DESPAWN_OUT_OF_COMBAT, 1000);
+        anzahl_addsc++;
         elementarc[anzahl_addsc] = elec->GetGUID();
     }
 
@@ -250,7 +250,7 @@ struct boss_darkweaver_sythAI : public ScriptedAI
             if (Unit *target = SelectUnit(SELECT_TARGET_RANDOM,0, 60, true))
                 DoCast(target,SPELL_CHAIN_LIGHTNING);
 
-            chainlightning_timer = 25000;
+            chainlightning_timer = urand(13000, 19000);
         } else chainlightning_timer -= diff;
 
         DoMeleeAttackIfReady();

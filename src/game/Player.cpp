@@ -18,6 +18,8 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
+#include <iomanip>
+
 #include "Common.h"
 #include "Language.h"
 #include "Database/DatabaseEnv.h"
@@ -275,8 +277,11 @@ Player::Player (WorldSession *session): Unit(), m_reputationMgr(this), m_camera(
     m_AC_timer = 0;
     m_AC_NoFall_count = 0;
 
-    m_speakTime = 0;
+    m_speakTimer = 0;
     m_speakCount = 0;
+
+    m_repeatIT = 0;
+    m_repeatTO = 0;
 
     m_GMfollowtarget_GUID = 0;
     m_GMfollow_GUID = 0;
@@ -338,6 +343,9 @@ Player::Player (WorldSession *session): Unit(), m_reputationMgr(this), m_camera(
     m_ArenaTeamIdInvited = 0;
 
     m_atLoginFlags = AT_LOGIN_NONE;
+
+    mSemaphoreTeleport_Near = false;
+    mSemaphoreTeleport_Far = false;
 
     pTrader = 0;
 
@@ -512,6 +520,9 @@ Player::~Player ()
     }
 
     delete m_declinedname;
+
+    // clean up the MessageCache
+    MessageCache.clear();
 
     DeleteCharmAI();
 }
@@ -896,6 +907,62 @@ void Player::UpdateFallInformationIfNeed(MovementInfo const& minfo,uint16 opcode
     if (m_lastFallTime >= minfo.GetFallTime() || m_lastFallZ <= minfo.GetPos()->z || opcode == MSG_MOVE_FALL_LAND)
         SetFallInformation(minfo.GetFallTime(), minfo.GetPos()->z);
 }
+
+
+void Player::UnsummonPetTemporaryIfAny()
+{
+    Pet* pet = GetPet();
+    if (!pet)
+        return;
+
+    if (!m_temporaryUnsummonedPetNumber && pet->isControlled() && !pet->isTemporarySummoned())
+        m_temporaryUnsummonedPetNumber = pet->GetCharmInfo()->GetPetNumber();
+
+    RemovePet(pet, PET_SAVE_NOT_IN_SLOT);
+}
+
+void Player::UnsummonPetIfAny()
+{
+    Pet* pet = GetPet();
+    if (!pet)
+        return;
+
+    RemovePet(pet, PET_SAVE_NOT_IN_SLOT);
+}
+
+bool Player::IsPetNeedBeTemporaryUnsummoned() const
+{
+    if (!IsInWorld() || !isAlive())
+        return true;
+
+    if (HasAuraType(SPELL_AURA_FLY) || (IsMounted() && HasAuraType(SPELL_AURA_MOD_INCREASE_FLIGHT_SPEED))) // if not IsMounted and has aura, means we are removing flying mount
+        return true;
+
+    if (hasUnitState(UNIT_STAT_TAXI_FLIGHT))
+        return true;
+
+    return false;
+}
+
+void Player::ResummonPetTemporaryUnSummonedIfAny()
+{
+    if (!m_temporaryUnsummonedPetNumber)
+        return;
+
+    // not resummon in not appropriate state
+    if (IsPetNeedBeTemporaryUnsummoned())
+        return;
+
+    if (GetPetGUID())
+        return;
+
+    Pet* NewPet = new Pet;
+    if (!NewPet->LoadPetFromDB(this, 0, m_temporaryUnsummonedPetNumber, true))
+        delete NewPet;
+
+    m_temporaryUnsummonedPetNumber = 0;
+}
+
 
 void Player::EnvironmentalDamage(EnviromentalDamage type, uint32 damage)
 {
@@ -1440,6 +1507,17 @@ void Player::Update(uint32 update_diff, uint32 p_time)
     UpdateEnchantTime(update_diff);
     UpdateHomebindTime(update_diff);
 
+    if (!_instanceResetTimes.empty())
+    {
+        for (InstanceTimeMap::iterator itr = _instanceResetTimes.begin(); itr != _instanceResetTimes.end();)
+        {
+            if (itr->second < now)
+                _instanceResetTimes.erase(itr++);
+            else
+                ++itr;
+        }
+    }
+
     // group update
     SendUpdateToOutOfRangeGroupMembers();
 
@@ -1621,6 +1699,47 @@ bool Player::BuildEnumData(QueryResultAutoPtr result, WorldPacket * p_data)
     return true;
 }
 
+void Player::CheckAndAnnounceServerFirst(Creature* creature)
+{
+    QueryResultAutoPtr result = RealmDataDatabase.PQuery("SELECT faction FROM server_first WHERE entry = %u", creature->GetEntry());
+    if (!result || (result->GetRowCount() == 1))
+    {
+        // Construct message
+        std::string msg = "Congratulations to ";
+        msg.append(GetName());
+        std::string guildName = sGuildMgr.GetGuildNameById(GetGuildId());
+        if (guildName != "")
+        {
+            msg.append(" from ");
+            msg.append(guildName);
+        }
+        msg.append(" for defeating ");
+        msg.append(creature->GetName());
+        msg.append("!");
+
+        if (result)
+        {
+            // Faction first
+            Field *fields = result->Fetch();
+            uint32 teamId = fields[0].GetUInt32();
+            if (GetTeamId() != teamId)
+            {
+                sWorld.SendWorldText(GetTeamId() == TEAM_ALLIANCE ? LANG_ALLIANCE_FIRST : LANG_HORDE_FIRST, 0, msg.c_str());
+                // Update database
+                RealmDataDatabase.PExecute("INSERT INTO server_first (entry, faction, character_id, guild_id) VALUES (%i, %i, %i, %i)", creature->GetEntry(), GetTeamId(), GetGUIDLow(), GetGuildId());
+            }
+        }
+        else
+        {
+            // Server first
+            sWorld.SendWorldText(LANG_SERVER_FIRST, 0, msg.c_str());
+            sWorld.SendWorldText(GetTeamId() == TEAM_ALLIANCE ? LANG_ALLIANCE_FIRST : LANG_HORDE_FIRST, 0, msg.c_str());
+            // Update database
+            RealmDataDatabase.PExecute("INSERT INTO server_first (entry, faction, character_id, guild_id) VALUES (%i, %i, %i, %i)", creature->GetEntry(), GetTeamId(), GetGUIDLow(), GetGuildId());
+        }
+    }
+}
+
 bool Player::ToggleAFK()
 {
     ToggleFlag(PLAYER_FLAGS, PLAYER_FLAGS_AFK);
@@ -1716,9 +1835,7 @@ bool Player::TeleportTo(uint32 mapid, float x, float y, float z, float orientati
         m_transport = NULL;
         m_movementInfo.ClearTransportData();
     }
-
-    SetSemaphoreTeleport(true);
-
+        
     m_AC_timer = 3000;
 
     // The player was ported to another map and looses the duel immediatly.
@@ -1737,73 +1854,38 @@ bool Player::TeleportTo(uint32 mapid, float x, float y, float z, float orientati
 
     if ((GetMapId() == mapid) && (!m_transport))
     {
-        // prepare zone change detect
-        uint32 old_zone = GetZoneId();
-
         WorldLocation tmpWLoc(mapid, x, y, z, orientation);
 
         if (!IsWithinDistInMap(&tmpWLoc, GetMap()->GetVisibilityDistance()))
             DestroyForNearbyPlayers();
 
-        // near teleport
-        if (!GetSession()->PlayerLogout())
-        {
-            // send transfer packet to display load screen
-            WorldPacket data;
-            BuildTeleportAckMsg(data, x, y, z, orientation);
-            SendPacketToSelf(&data);
-            SetPosition(x, y, z, orientation, true);
-        }
-        else
-            // this will be used instead of the current location in SaveToDB
-            m_teleport_dest = tmpWLoc;
-
-        SetFallInformation(0, z);
-
         if (!(options & TELE_TO_NOT_UNSUMMON_PET))
         {
             //same map, only remove pet if out of range
             if (pet && !IsWithinDistInMap(pet, OWNER_MAX_DISTANCE))
-            {
-                if (pet->isControlled() && !pet->isTemporarySummoned())
-                    m_temporaryUnsummonedPetNumber = pet->GetCharmInfo()->GetPetNumber();
-                else
-                    m_temporaryUnsummonedPetNumber = 0;
-
-                RemovePet(pet, PET_SAVE_NOT_IN_SLOT);
+            {                
+                UnsummonPetTemporaryIfAny();
             }
         }
 
         if (!(options & TELE_TO_NOT_LEAVE_COMBAT))
             CombatStop();
 
-        if (!(options & TELE_TO_NOT_UNSUMMON_PET))
-        {
-            // resummon pet
-            if (pet && m_temporaryUnsummonedPetNumber)
-            {
-                Pet* NewPet = new Pet;
-                if (!NewPet->LoadPetFromDB(this, 0, m_temporaryUnsummonedPetNumber, true))
-                    delete NewPet;
+        // this will be used instead of the current location in SaveToDB
+        m_teleport_dest = WorldLocation(mapid, x, y, z, orientation);
+        SetFallInformation(0, z);
 
-                m_temporaryUnsummonedPetNumber = 0;
-            }
-        }
+        // code for finish transfer called in WorldSession::HandleMovementOpcodes() 
+        // at client packet MSG_MOVE_TELEPORT_ACK
+        SetSemaphoreTeleportNear(true);
+
 
         // near teleport, triggering send MSG_MOVE_TELEPORT_ACK from client at landing
         if (!GetSession()->PlayerLogout())
         {
-            // don't reset teleport semaphore while logging out, otherwise m_teleport_dest won't be used in Player::SaveToDB
-            SetSemaphoreTeleport(false);
-            UpdateZone(GetZoneId());
-        }
-
-        // new zone
-        if (old_zone != GetZoneId())
-        {
-            // honorless target
-            if (pvpInfo.inHostileArea)
-                CastSpell(this, 2479, true);
+            WorldPacket data;
+            BuildTeleportAckMsg(data, x, y, z, orientation);
+            GetSession()->SendPacket(&data);
         }
 
         if (getFollowingGM())
@@ -1826,7 +1908,6 @@ bool Player::TeleportTo(uint32 mapid, float x, float y, float z, float orientati
         // this check not dependent from map instance copy and same for all instance copies of selected map
         if (!sMapMgr.CanPlayerEnter(mapid, this))
         {
-            SetSemaphoreTeleport(false);
             return false;
         }
 
@@ -1836,7 +1917,7 @@ bool Player::TeleportTo(uint32 mapid, float x, float y, float z, float orientati
             {
                 if (iMap->EncounterInProgress(this))
                 {
-                    SetSemaphoreTeleport(false);
+                    SetSemaphoreTeleportFar(false);
                     return false;
                 }
             }
@@ -1954,6 +2035,8 @@ bool Player::TeleportTo(uint32 mapid, float x, float y, float z, float orientati
             SetFallInformation(0, final_z);
             // if the player is saved before worldportack (at logout for example)
             // this will be used instead of the current location in SaveToDB
+
+            SetSemaphoreTeleportFar(true);
         }
         else
             return false;
@@ -2550,6 +2633,45 @@ void Player::GiveLevel(uint32 level)
 {
     if (level == getLevel())
         return;
+
+    // Server first level 70 checks
+    if ((level == 70) && (!isGameMaster()))
+    {
+        QueryResultAutoPtr result = RealmDataDatabase.PQuery("SELECT entry FROM server_first WHERE entry = %u OR entry = %u", TEAM_ALLIANCE, TEAM_HORDE);
+        if (!result || (result->GetRowCount() == 1))
+        {
+            // Construct message
+            std::string msg = "Congratulations to ";
+            msg.append(GetName());
+            std::string guildName = sGuildMgr.GetGuildNameById(GetGuildId());
+            if (guildName != "")
+            {
+                msg.append(" from ");
+                msg.append(guildName);
+            }
+            msg.append(" for achieving level 70!");
+
+            if (result)
+            {
+                // Faction first
+                Field *fields = result->Fetch();
+                uint32 teamId = fields[0].GetUInt32();
+                if (GetTeamId() != teamId)
+                {
+                    sWorld.SendWorldText(GetTeamId() == TEAM_ALLIANCE ? LANG_ALLIANCE_FIRST : LANG_HORDE_FIRST, 0, msg.c_str());
+                }
+            }
+            else
+            {
+                // Server first
+                sWorld.SendWorldText(LANG_SERVER_FIRST, 0, msg.c_str());
+                sWorld.SendWorldText(GetTeamId() == TEAM_ALLIANCE ? LANG_ALLIANCE_FIRST : LANG_HORDE_FIRST, 0, msg.c_str());
+            }
+
+            // Update database
+            RealmDataDatabase.PExecute("INSERT INTO server_first (entry, character_id, guild_id) VALUES (%i, %i, %i)", GetTeamId(), GetGUIDLow(), GetGuildId());
+        }
+    }
 
     PlayerLevelInfo info;
     sObjectMgr.GetPlayerLevelInfo(getRace(),getClass(),level,&info);
@@ -3549,10 +3671,7 @@ uint32 Player::resetTalentsCost() const
         return 1*GOLD;
     // then 5 gold
     else if (m_resetTalentsCost < 5*GOLD)
-        return 5*GOLD;
-    // After that it increases in increments of 5 gold
-    else if (m_resetTalentsCost < 10*GOLD)
-        return 10*GOLD;
+        return 5*GOLD;    
     else
     {
         uint32 months = (sWorld.GetGameTime() - m_resetTalentsTime)/MONTH;
@@ -3560,16 +3679,16 @@ uint32 Player::resetTalentsCost() const
         {
             // This cost will be reduced by a rate of 5 gold per month
             int32 new_cost = int32(m_resetTalentsCost) - 5*GOLD*months;
-            // to a minimum of 10 gold.
-            return (new_cost < 10*GOLD ? 10*GOLD : new_cost);
+            // to a minimum of 5 gold.
+            return (new_cost < 5*GOLD ? 5*GOLD : new_cost);
         }
         else
         {
             // After that it increases in increments of 5 gold
             int32 new_cost = m_resetTalentsCost + 5*GOLD;
-            // until it hits a cap of 50 gold.
-            if (new_cost > 50*GOLD)
-                new_cost = 50*GOLD;
+            // until it hits a cap of 20 gold.
+            if (new_cost > 20*GOLD)
+                new_cost = 20*GOLD;
             return new_cost;
         }
     }
@@ -4174,7 +4293,15 @@ void Player::SetMovement(PlayerMovementType pType)
     }
     data << GetPackGUID();
     data << uint32(0);
-    SendPacketToSelf(&data);
+
+    if (GetMover() && GetMover()->GetTypeId() == TYPEID_PLAYER)
+    {
+        Player* pMover = (Player*)GetMover();
+        if (pMover != this)
+            pMover->GetSession()->SendPacket(&data);
+    }
+
+    GetSession()->SendPacket(&data);
 }
 
 /* Preconditions:
@@ -5349,72 +5476,54 @@ bool Player::UpdateSkillPro(uint16 SkillId, int32 Chance, uint32 step)
     return false;
 }
 
-void Player::UpdateWeaponSkill (WeaponAttackType attType)
+void Player::UpdateWeaponSkill(WeaponAttackType attType)
 {
+    // no skill gain in pvp
+    Unit* pVictim = getVictim();
+    if (pVictim && pVictim->isCharmedOwnedByPlayerOrPlayer())
+        return;
 
-    if (IsInFeralForm(true))
+    if (IsInFeralForm())
         return;                                             // always maximized SKILL_FERAL_COMBAT in fact
 
-    if (m_form == FORM_TREE)
-        return;                                             // use weapon but not skill up
+    uint32 weaponSkillGain = sWorld.getConfig(CONFIG_SKILL_GAIN_WEAPON);
 
-    uint32 weapon_skill_gain = sWorld.getConfig(CONFIG_SKILL_GAIN_WEAPON);
+    Item* pWeapon = GetWeaponForAttack(attType, true);
+    if (pWeapon && pWeapon->GetProto()->SubClass != ITEM_SUBCLASS_WEAPON_FISHING_POLE)
+        UpdateSkill(pWeapon->GetSkill(), weaponSkillGain);
+    else if (!pWeapon && attType == BASE_ATTACK)
+        UpdateSkill(SKILL_UNARMED, weaponSkillGain);
 
-    switch (attType)
-    {
-        case BASE_ATTACK:
-        {
-            Item *tmpitem = GetWeaponForAttack(attType,true);
-
-            if (!tmpitem)
-                UpdateSkill(SKILL_UNARMED,weapon_skill_gain);
-            else if (tmpitem->GetProto()->SubClass != ITEM_SUBCLASS_WEAPON_FISHING_POLE)
-                UpdateSkill(tmpitem->GetSkill(),weapon_skill_gain);
-            break;
-        }
-        case OFF_ATTACK:
-        case RANGED_ATTACK:
-        {
-            Item *tmpitem = GetWeaponForAttack(attType,true);
-            if (tmpitem)
-                UpdateSkill(tmpitem->GetSkill(),weapon_skill_gain);
-            break;
-        }
-    }
     UpdateAllCritPercentages();
 }
 
-void Player::UpdateCombatSkills(Unit *pVictim, WeaponAttackType attType, bool defence) //if defense than pVictim == attacker
+void Player::UpdateCombatSkills(Unit* pVictim, WeaponAttackType attType, bool defence)
 {
-    if (pVictim->isCharmedOwnedByPlayerOrPlayer()) // no skill ups in pvp
-        return;
-
-    uint32 plevel = getLevel();
+    uint32 plevel = getLevel();                             // if defense than pVictim == attacker
+    uint32 greylevel = Looking4group::XP::GetGrayLevel(plevel);
     uint32 moblevel = pVictim->getLevelForTarget(this);
+    if (moblevel < greylevel)
+        return;
 
     if (moblevel > plevel + 5)
         moblevel = plevel + 5;
 
-    float lvldif = 1.5f;
-    if (moblevel >= plevel)
-    {
-        lvldif = moblevel - plevel;
-        if (lvldif < 3)
-            lvldif = 3;
-    }
+    uint32 lvldif = moblevel - greylevel;
+    if (lvldif < 3)
+        lvldif = 3;
 
-    uint32 skilldif = 5 * plevel - (defence ? GetBaseDefenseSkillValue() : GetBaseWeaponSkillValue(attType));
+    int32 skilldif = 5 * plevel - (defence ? GetBaseDefenseSkillValue() : GetBaseWeaponSkillValue(attType));
+
+    // Max skill reached for level.
+    // Can in some cases be less than 0: having max skill and then .level -1 as example.
     if (skilldif <= 0)
         return;
 
-    float chance = (float(3 * lvldif * skilldif) / plevel) * 0.5f;
+    float chance = float(3 * lvldif * skilldif) / plevel;
     if (!defence)
-        chance += 0.02f * GetStat(STAT_INTELLECT);
+        chance *= 0.1f * GetStat(STAT_INTELLECT);
 
-    chance = chance < 1.0f ? 1.0f : chance;                 //minimum chance to increase skill is 1%
-
-    if (!defence)
-        SendCombatStats("Weapon skill update [ skill: %u, chance %f, skilldif: %u ]", pVictim, attType, chance, skilldif);
+    chance = chance < 1.0f ? 1.0f : chance;                 // minimum chance to increase skill is 1%
 
     if (roll_chance_f(chance))
     {
@@ -5423,6 +5532,8 @@ void Player::UpdateCombatSkills(Unit *pVictim, WeaponAttackType attType, bool de
         else
             UpdateWeaponSkill(attType);
     }
+    else
+        return;
 }
 
 void Player::ModifySkillBonus(uint32 skillid,int32 val, bool talent)
@@ -5874,7 +5985,7 @@ void Player::CheckAreaExploreAndOutdoor()
         else if (p->area_level > 0)
         {
             uint32 area = p->ID;
-            if (getLevel() >= sWorld.getConfig(CONFIG_MAX_PLAYER_LEVEL))
+            if (getLevel() >= sWorld.getConfig(CONFIG_MAX_PLAYER_LEVEL) || getLevel() < sWorld.getConfig(CONFIG_MIN_PLAYER_EXPLORE_LEVEL))
             {
                 SendExplorationExperience(area,0);
             }
@@ -7647,6 +7758,11 @@ void Player::SendLoot(uint64 guid, LootType loot_type)
 
         loot = &go->loot;
 
+        // loot was generated and respawntime has passed since then, allow to recreate loot
+        // to avoid bugs, this rule covers spawned gameobjects only
+        if (go->isSpawnedByDefault() && go->getLootState() == GO_ACTIVATED && !go->loot.isLooted() && go->GetLootGenerationTime() + go->GetRespawnDelay() < time(nullptr))
+            go->SetLootState(GO_READY);
+
         if (go->getLootState() == GO_READY)
         {
             uint32 lootid =  go->GetLootId();
@@ -7666,6 +7782,7 @@ void Player::SendLoot(uint64 guid, LootType loot_type)
                 sLog.outDebug("       if (lootid)");
                 loot->clear();
                 loot->FillLoot(lootid, LootTemplates_Gameobject, this, false);
+                go->SetLootGenerationTime();
 
                 //if chest apply 2.1.x rules
                 if ((go->GetGoType() == GAMEOBJECT_TYPE_CHEST)&&(go->GetGOInfo()->chest.groupLootRules))
@@ -7821,6 +7938,7 @@ void Player::SendLoot(uint64 guid, LootType loot_type)
             if (loot_type == LOOT_SKINNING)
             {
                 loot->clear();
+                permission = ALL_PERMISSION;
                 loot->FillLoot(creature->GetCreatureInfo()->SkinLootId, LootTemplates_Skinning, this, false);
             }
             // set group rights only for loot_type != LOOT_SKINNING
@@ -10102,6 +10220,9 @@ uint8 Player::CanEquipItem(uint8 slot, uint16 &dest, Item *pItem, bool swap, boo
                         return EQUIP_ERR_CANT_DO_RIGHT_NOW;
                 }
 
+                // prevent equip item in Spirit of Redemption (Aura: 27827)
+                if (HasAuraType(SPELL_AURA_SPIRIT_OF_REDEMPTION))
+                    return EQUIP_ERR_CANT_DO_RIGHT_NOW;
             }
 
             uint8 eslot = FindEquipSlot(pProto, slot, swap);
@@ -13059,12 +13180,20 @@ void Player::RewardQuest(Quest const *pQuest, uint32 reward, Object* questGiver,
         {
             if (pQuest->RewItemId[i])
             {
+                uint32 noSpaceForCount = 0;
+                uint32 count = pQuest->RewItemCount[i];
+
                 ItemPosCountVec dest;
-                if (CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, pQuest->RewItemId[i], pQuest->RewItemCount[i]) == EQUIP_ERR_OK)
+                if (CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, pQuest->RewItemId[i], count, &noSpaceForCount) == EQUIP_ERR_OK)
                 {
                     Item* item = StoreNewItem(dest, pQuest->RewItemId[i], true);
                     SendNewItem(item, pQuest->RewItemCount[i], true, false);
                 }
+                else
+                    count = noSpaceForCount;
+
+                if (count == 0 || dest.empty()) // can't add any
+                    SendItemByMail(this, pQuest->RewItemId[i], count);
             }
         }
     }
@@ -13080,12 +13209,12 @@ void Player::RewardQuest(Quest const *pQuest, uint32 reward, Object* questGiver,
     // Not give XP in case already completed once repeatable quest
     uint32 XP = q_status.m_rewarded ? 0 : uint32(pQuest->XPValue(this)*GetXPRate(RATE_XP_QUEST));
 
-	//SWP QUESTS AUCH FÜR EVENT
-	uint32 SWPQuests[19] = {11525, 11535, 11540, 11524, 11547, 11536, 11542, 11546, 11523, 11548, 11526, 11537, 11533, 11496, 11539, 11543, 11541, 11532, 11545};
-	uint32 actualQuestId;
-	bool validRepeatableQuestforXP;
-	validRepeatableQuestforXP = false;
-	actualQuestId = pQuest->GetQuestId();
+    //SWP QUESTS AUCH FÜR EVENT
+    uint32 SWPQuests[19] = {11525, 11535, 11540, 11524, 11547, 11536, 11542, 11546, 11523, 11548, 11526, 11537, 11533, 11496, 11539, 11543, 11541, 11532, 11545};
+    uint32 actualQuestId;
+    bool validRepeatableQuestforXP;
+    validRepeatableQuestforXP = false;
+    actualQuestId = pQuest->GetQuestId();
 
     uint32 SWPQuests_new[21] = {11488, 11514, 11515, 11516, 11521, 11523, 11525, 11526, 11533, 11536, 11537, 11540, 11541, 11543, 11544, 11546, 11547, 11548, 11549, 11875, 11877};
     for (uint32 i=0; i<21; i++)
@@ -13107,13 +13236,13 @@ void Player::RewardQuest(Quest const *pQuest, uint32 reward, Object* questGiver,
         }
     }
 
-	for (uint32 i=0; i<19; i++)
-	{
-		if (actualQuestId == SWPQuests[i])
-		{
-			validRepeatableQuestforXP = true;
-		}
-	}	
+    for (uint32 i=0; i<19; i++)
+    {
+        if (actualQuestId == SWPQuests[i])
+        {
+            validRepeatableQuestforXP = true;
+        }
+    }    
 
     if (getLevel() < sWorld.getConfig(CONFIG_MAX_PLAYER_LEVEL) && (!StopLevel(GetGUID())))
         GiveXP(XP , NULL);
@@ -14651,6 +14780,7 @@ bool Player::LoadFromDB(uint32 guid, SqlQueryHolder *holder)
             SetUInt32Value(PLAYER_FIELD_ARENA_TEAM_INFO_1_1 + arena_slot * 6 + j, 0);
     }
 
+    _LoadInstanceTimeRestrictions(holder->GetResult(PLAYER_LOGIN_QUERY_LOADINSTANCELOCKTIMES));
     _LoadBoundInstances(holder->GetResult(PLAYER_LOGIN_QUERY_LOADBOUNDINSTANCES));
 
     if (!IsPositionValid())
@@ -16399,6 +16529,7 @@ void Player::SaveToDB()
     _SaveSpellCooldowns();
     _SaveActions();
     _SaveAuras();
+    _SaveInstanceTimeRestrictions();
     m_reputationMgr.SaveToDB(false);
 
     RealmDataDatabase.CommitTransaction();
@@ -16897,11 +17028,11 @@ void Player::_SaveMonthlyQuestStatus()
     static SqlStatementID insertMonthlyDaily;
 
     // we don't need transactions here.
-	SqlStatement stmt = RealmDataDatabase.CreateStatement(deleteMonthlyDailies, "DELETE FROM character_queststatus_monthly WHERE guid = ?");
- 	stmt.PExecute(GetGUIDLow());
- 	
+    SqlStatement stmt = RealmDataDatabase.CreateStatement(deleteMonthlyDailies, "DELETE FROM character_queststatus_monthly WHERE guid = ?");
+    stmt.PExecute(GetGUIDLow());
+    
     for (std::set<uint32>::const_iterator iter = m_monthlyquests.begin(); iter != m_monthlyquests.end(); ++iter)
- 	{
+    {
         uint32 quest_id = *iter;
         stmt = RealmDataDatabase.CreateStatement(insertMonthlyDaily, "INSERT INTO character_queststatus_monthly (guid, quest,time) VALUES (?, ?, ?)");
         stmt.addUInt32(GetGUIDLow());
@@ -17017,42 +17148,143 @@ void Player::outDebugValues() const
 /***               FLOOD FILTER SYSTEM                 ***/
 /*********************************************************/
 
-void Player::UpdateSpeakTime()
+void Player::UpdateSpeakTime(bool emote)
 {
     // ignore chat spam protection for GMs in any mode
-    if (GetSession()->HasPermissions(PERM_GMT))
+    if (GetSession()->GetPermissions() > PERM_PLAYER)
         return;
 
     time_t current = time (NULL);
-    if (m_speakTime > current)
+    if (m_speakTimer > current)
     {
-        uint32 max_count = sWorld.getConfig(CONFIG_CHATFLOOD_MESSAGE_COUNT);
+        uint32 max_count = (emote ? sWorld.getConfig(CONFIG_CHATFLOOD_EMOTE_COUNT) : sWorld.getConfig(CONFIG_CHATFLOOD_MESSAGE_COUNT));
         if (!max_count)
             return;
 
-        ++m_speakCount;
+        m_speakCount++;
         if (m_speakCount >= max_count)
         {
             // prevent overwrite mute time, if message send just before mutes set, for example.
             time_t new_mute = current + sWorld.getConfig(CONFIG_CHATFLOOD_MUTE_TIME);
             if (GetSession()->m_muteTime < new_mute)
-            {
                 GetSession()->m_muteTime = new_mute;
-                GetSession()->m_muteReason = "Flood protection";
-            }
 
             m_speakCount = 0;
         }
     }
     else
-        m_speakCount = 0;
+       m_speakCount = 0;
 
-    m_speakTime = current + sWorld.getConfig(CONFIG_CHATFLOOD_MESSAGE_DELAY);
+    m_speakTimer = current + (emote ? sWorld.getConfig(CONFIG_CHATFLOOD_EMOTE_DELAY) : sWorld.getConfig(CONFIG_CHATFLOOD_MESSAGE_DELAY));
 }
 
 bool Player::CanSpeak() const
 {
     return GetSession()->m_muteTime <= time (NULL);
+}
+
+bool Player::DoSpamCheck(std::string message)
+{
+    // Capslock Flood System
+    if (message.length() >= sWorld.getConfig(CONFIG_CHATFLOOD_CAPS_LENGTH))
+    {
+        uint32 slength = message.length();
+        uint32 clength = 0;
+        for (uint32 fc = 0; fc < slength; ++fc)
+        {
+            if (message[fc] >= 'A' && message[fc] <= 'Z')
+                ++clength;
+        }
+
+        float pctcaps = (float(clength) / float(slength)) * 100.0f;
+        float MaxPct = sWorld.getConfig(CONFIG_CHATFLOOD_CAPS_PCT);
+        uint32 ReqLength = sWorld.getConfig(CONFIG_CHATFLOOD_CAPS_LENGTH);
+
+        if (pctcaps >= MaxPct)
+        {
+            ChatHandler(this).PSendSysMessage("Your message was blocked by the server. Please do not type too many capitals in your message, such is considered spamming. You are allowed %.2f%% caps in a message of %u characters.\n\n", MaxPct, ReqLength);
+            return false;
+        }
+    }
+
+    // Repeating Messages System
+
+    // Check if we need to clear the cache when the time ran out.
+    if ((time(NULL) - m_repeatTO) > sWorld.getConfig(CONFIG_CHATFLOOD_REPEAT_TIMEOUT))
+    {
+        MessageCache.clear();
+        m_repeatIT = 0;
+    }
+    transform(message.begin(), message.end(), message.begin(), toupper);
+
+    if (std::find(MessageCache.begin(), MessageCache.end(), message) == MessageCache.end()) // Not found, add it
+    {
+        MessageCache.insert(MessageCache.end(), message);
+
+        if (m_repeatTO == NULL)
+            m_repeatTO = time(NULL);
+
+        // Double check if we need to reset the time in case of a fast spammer who would be able to say something twice.
+        if ((time(NULL) - m_repeatTO) > sWorld.getConfig(CONFIG_CHATFLOOD_REPEAT_TIMEOUT)) // Reset the time
+            m_repeatTO = time(NULL);
+    }
+    else // We have found a double message
+    {
+        ++m_repeatIT;
+        if (m_repeatIT > sWorld.getConfig(CONFIG_CHATFLOOD_REPEAT_MESSAGES))
+        {
+            time_t mutetime = time(NULL) + sWorld.getConfig(CONFIG_CHATFLOOD_REPEAT_MUTE);
+            GetSession()->m_muteTime = mutetime;
+            ChatHandler(this).PSendSysMessage("Yor chat has been blocked for %u Seconds because you repeated youself for over %u times in a time of %u seconds.\n\n", sWorld.getConfig(CONFIG_CHATFLOOD_REPEAT_MESSAGES), sWorld.getConfig(CONFIG_CHATFLOOD_REPEAT_MESSAGES), sWorld.getConfig(CONFIG_CHATFLOOD_REPEAT_TIMEOUT));
+            return false;
+        }
+
+        time_t TimeLeft = sWorld.getConfig(CONFIG_CHATFLOOD_REPEAT_TIMEOUT) - (time(NULL) - m_repeatTO);
+       ChatHandler(this).PSendSysMessage("Please don't repeat yourself. You are allowed to send 1 identical message every %u seconds. Please wait %u seconds before sending the same message again.\n\n", sWorld.getConfig(CONFIG_CHATFLOOD_REPEAT_TIMEOUT), TimeLeft);
+        return false;
+    }
+    return true;
+}
+
+bool Player::SpamCheckForType(uint32 type, uint32 lang)
+{    
+    if (GetSession()->GetPermissions() > PERM_PLAYER || lang == LANG_ADDON)
+        return false; // addon chatter is ignored
+
+    uint32 SpamTypeConfig = sWorld.getConfig(CONFIG_CHATFLOOD_CHATTYPE);
+
+    // Say
+    if (SpamTypeConfig & CHAT_FLOOD_SAY && type == CHAT_MSG_SAY)
+        return true;
+
+    // Yell
+    if (SpamTypeConfig & CHAT_FLOOD_YELL && type == CHAT_MSG_YELL)
+        return true;
+
+    // Emote
+    if (SpamTypeConfig & CHAT_FLOOD_EMOTE && type == CHAT_MSG_EMOTE)
+        return true;
+
+    // Channel
+    if (SpamTypeConfig & CHAT_FLOOD_CHANNEL && type == CHAT_MSG_CHANNEL)
+        return true;
+
+    // Whisper
+    if (SpamTypeConfig & CHAT_FLOOD_WHISPER && type == CHAT_MSG_WHISPER)
+        return true;
+    // Party
+    if (SpamTypeConfig & CHAT_FLOOD_PARTY && type == CHAT_MSG_PARTY)
+        return true;
+
+    // Guild
+    if (SpamTypeConfig & CHAT_FLOOD_GUILD && type == CHAT_MSG_GUILD)
+        return true;
+
+    // Battleground
+    if (SpamTypeConfig & CHAT_FLOOD_BG && type == CHAT_MSG_BATTLEGROUND)
+        return true;
+
+    return false;
 }
 
 /*********************************************************/
@@ -17466,6 +17698,8 @@ void Player::Uncharm()
         charm->RemoveSpellsCausingAura(SPELL_AURA_MOD_POSSESS);
     }
 
+    charm->SendHealthUpdateDueToCharm(this);
+
     if (GetCharmGUID())
     {
         sLog.outLog(LOG_DEFAULT, "ERROR: CRASH ALARM! Player %s is not able to uncharm unit (Entry: %u, Type: %u)", GetName(), charm->GetEntry(), charm->GetTypeId());
@@ -17622,6 +17856,8 @@ void Player::PetSpellInitialize()
         data << uint32(0x8e8b) << uint64(0);                // if count = 3
 
         SendPacketToSelf(&data);
+
+        pet->SendHealthUpdateDueToCharm(this);
     }
 }
 
@@ -17660,6 +17896,7 @@ void Player::PossessSpellInitialize()
     data << uint32(0x8e8b) << uint64(0);                    // if count = 3
 
     SendPacketToSelf(&data);
+    charm->SendHealthUpdateDueToCharm(this);
 }
 
 void Player::CharmSpellInitialize()
@@ -17730,6 +17967,7 @@ void Player::CharmSpellInitialize()
     data << uint32(0x8e8b) << uint64(0);                    // if count = 3
 
     SendPacketToSelf(&data);
+    charm->SendHealthUpdateDueToCharm(this);
 }
 
 int32 Player::GetTotalFlatMods(uint32 spellId, SpellModOp op)
@@ -17841,6 +18079,31 @@ void Player::RestoreSpellMods(Spell const* spell)
                 mod->charges = 1;
                 m_SpellModRemoveCount--;
             }
+        }
+    }
+}
+
+void Player::ResetSpellModsDueToCanceledSpell(Spell const* spell)
+{
+    for (int i = 0; i < MAX_SPELLMOD; ++i)
+    {
+        for (SpellModList::const_iterator itr = m_spellMods[i].begin(); itr != m_spellMods[i].end(); ++itr)
+        {
+            SpellModifier* mod = *itr;
+
+            if (mod->lastAffected != spell)
+                continue;
+
+            mod->lastAffected = nullptr;
+
+            if (mod->charges == -1)
+            {
+                mod->charges = 1;
+                if (m_SpellModRemoveCount > 0)
+                    --m_SpellModRemoveCount;
+            }
+            else if (mod->charges > 0)
+                ++mod->charges;
         }
     }
 }
@@ -18146,7 +18409,7 @@ void Player::CleanupAfterTaxiFlight()
     getHostilRefManager().setOnlineOfflineState(true);
 }
 
-void Player::ProhibitSpellSchool(SpellSchoolMask idSchoolMask, uint32 unTimeMs)
+void Player::LockSpellSchool(SpellSchoolMask idSchoolMask, uint32 unTimeMs)
 {
                                                             // last check 2.0.10
     WorldPacket data(SMSG_SPELL_COOLDOWN, 8+1+m_spells.size()*8);
@@ -18739,6 +19002,15 @@ void Player::LeaveBattleground(bool teleportToEntryPoint)
             GetCamera().ResetView(true);
         }
 
+        if(bg->isArena() && bg->isRated() && bg->GetStatus() != STATUS_WAIT_LEAVE) //if game has not end then make sure that personal raiting is decreased
+        {
+            //decrease private raiting here
+            Team Winner = GetTeam() == ALLIANCE ? HORDE : ALLIANCE;
+            Team Looser = GetTeam() == ALLIANCE ? ALLIANCE : HORDE;
+            ArenaTeam* WinnerTeam = sObjectMgr.GetArenaTeamById(bg->GetArenaTeamIdForTeam(Winner));
+            ArenaTeam* LooserTeam = sObjectMgr.GetArenaTeamById(bg->GetArenaTeamIdForTeam(Looser));
+            LooserTeam->MemberLost(this,WinnerTeam->GetStats().rating, 0);
+        }
         bg->RemovePlayerAtLeave(GetGUID(), teleportToEntryPoint, true);
 
         if (bg->isBattleGround() && sWorld.getConfig(CONFIG_BATTLEGROUND_CAST_DESERTER))
@@ -19079,7 +19351,7 @@ void Player::SendInitialVisiblePackets(Unit* target)
     if (target->isAlive())
     {
         if (target->hasUnitState(UNIT_STAT_MELEE_ATTACKING) && target->getVictim())
-            target->SendMeleeAttackStart(target->getVictim());
+            target->SendMeleeAttackStart(target->getVictimGUID());
     }
 }
 
@@ -20017,7 +20289,7 @@ bool Player::RewardPlayerAndGroupAtKill(Unit* pVictim)
 
                         pGroupGuy->GiveXP(itr_xp, pVictim);
                         if (Pet* pet = pGroupGuy->GetPet())
-                            pet->GivePetXP(itr_xp/2);
+                            pet->GivePetXP(itr_xp);
                     }
 
                     // quest objectives updated only for alive group member or dead but with not released body
@@ -20828,8 +21100,8 @@ bool ItemPosCount::isContainedIn(ItemPosCountVec const& vec) const
 
 void Player::HandleFallDamage(MovementInfo& movementInfo)
 {
-    if (movementInfo.GetFallTime() < 1500)
-        return;
+    //if (movementInfo.GetFallTime() < sWorld.GetUpdateTime()) // certain teleport spells need falldamage buffer, otherwise players die from falldamage
+        //return; 
 
     // calculate total z distance of the fall
     float z_diff = m_lastFallZ - movementInfo.GetPos()->z;
@@ -20837,8 +21109,8 @@ void Player::HandleFallDamage(MovementInfo& movementInfo)
     sLog.outDebug("zDiff = %f", z_diff);
 
     //Players with low fall distance, Feather Fall or physical immunity (charges used) are ignored
-    // 14.57 can be calculated by resolving damageperc formular below to 0
-    if (z_diff >= 14.57f && !isDead() && !isGameMaster() &&
+    // 13.47 can be calculated by resolving damageperc formular below to 0
+    if (z_diff >= 13.47f && !isDead() && !isGameMaster() &&
         !HasAuraType(SPELL_AURA_HOVER) && !HasAuraType(SPELL_AURA_FEATHER_FALL) &&
         !(HasAuraType(SPELL_AURA_FLY) && areaID != 550) && !IsImmunedToDamage(SPELL_SCHOOL_MASK_NORMAL,true))  //do not check for fly aura in Tempest Keep:Eye to properly deal fall dmg when after knockback (Gravity Lapse)
     {
@@ -21035,6 +21307,7 @@ bool Player::isTotalImmunity()
     return false;
 }
 
+
 void Player::BuildTeleportAckMsg(WorldPacket& data, float x, float y, float z, float ang) const
 {
     MovementInfo mi = m_movementInfo;
@@ -21066,6 +21339,12 @@ void Player::SendTimeSync()
 
 float Player::GetXPRate(Rates rate)
 {
+    if (sWorld.getConfig(CONFIG_ENABLE_CUSTOM_XP_RATES) && GetSession()->IsAccountFlagged(ACC_CUSTOM_XP_RATE_1))
+        return 1.0f;
+    else if (sWorld.getConfig(CONFIG_GET_CUSTOM_XP_RATE_LEVEL) > 0)
+        if (getLevel() <= sWorld.getConfig(CONFIG_GET_CUSTOM_XP_RATE_LEVEL))
+            return (sWorld.getRate(Rates(rate)) + sWorld.getRate(RATE_CUSTOM_XP_VALUE));
+
     return sWorld.getRate(Rates(rate));
 }
 
@@ -21112,6 +21391,15 @@ uint8 Player::GetValidForPush()
     return 5;
 }
 
+bool Player::GetValidForPushSeventy()
+{
+// return: 1 = zu hohes level; 2 = bereits zu viele auf zu hohem level; 3 = alles okay, gib feuer; 4 = second account, nix machen
+    if (getLevel() >= 70)
+        return false;
+
+    return true;
+}
+
 void Player::Push()
 {
     GiveLevel(60);
@@ -21122,9 +21410,395 @@ void Player::Push()
 void Player::PushSixty()
 {
     GiveLevel(60);
-    learnSpell(33389); //riding skill of 75
+    
+    // Alliance
+    if (GetTeam() == ALLIANCE)
+        learnSpell(33391); //riding skill of 100
+    else
+        learnSpell(33389); //riding skill of 75
+    
     SaveToDB();
 }
+
+void Player::PushSeventy()
+{
+    GiveLevel(70);
+    learnSpell(33391); //riding skill of 100
+    SaveToDB();
+}
+
+//Sets the reputation for the supplied faction to the supplied reputation value
+void Player::PushFaction(uint16 factionId, uint32 repValue)
+{    
+    m_reputationMgr.SetReputation(sFactionStore.LookupEntry(factionId), repValue);    
+    SaveToDB();
+}
+
+void Player::FinishTransferQuests()
+{
+    //City of Light
+    Quest const* cityOfLightQuest = sObjectMgr.GetQuestTemplate(10210);
+    AddQuest(cityOfLightQuest, NULL);
+    CompleteQuest(10210);
+
+    //Kara attunement
+    Quest const* karaAttunementQuest = sObjectMgr.GetQuestTemplate(9837);
+    AddQuest(karaAttunementQuest, NULL);
+    CompleteQuest(9837);
+
+    //Shattrath Escort quest
+    Quest const* shattrathEscortQuest = sObjectMgr.GetQuestTemplate(10211);
+    AddQuest(shattrathEscortQuest, NULL);
+    CompleteQuest(10211);
+
+    SaveToDB();
+}
+
+void Player::EquipForPushSeventy(uint16 items[])
+{
+    if (!HasItemCount(6948, 1, true))
+        AddItem(6948,1); //Hearthstone    
+
+    switch (GetTeam())
+    {
+        case ALLIANCE:
+        {
+            switch (getRace())
+            {
+                case RACE_HUMAN:
+                    if (!HasItemCount(18778, 1, true))  //Mount
+                        AddItem(18778, 1);
+                    break;
+                case RACE_DWARF:
+                    if (!HasItemCount(18787, 1, true))  //Mount
+                        AddItem(18787, 1);
+                    break;
+                case RACE_NIGHTELF:
+                    if (!HasItemCount(18767, 1, true))  //Mount
+                        AddItem(18767, 1);
+                    break;
+                case RACE_GNOME:
+                    if (!HasItemCount(18772, 1, true))  //Mount
+                    AddItem(18772, 1);
+                    break;
+                case RACE_DRAENEI:
+                    if (!HasItemCount(29745, 1, true))  //Mount
+                        AddItem(29745, 1);
+                    break;
+            }
+
+            switch (getClass())
+            {
+                case CLASS_WARRIOR:
+                    learnSpell(71);
+                    learnSpell(355);
+                    learnSpell(7386);
+                    learnSpell(2458);
+                    learnSpell(20252);
+                    learnSpell(200);
+                    learnSpell(750);
+                    learnSpell(197);
+                    learnSpell(196);
+                    learnSpell(201);
+                    learnSpell(2567);
+                    learnSpell(266);
+                    learnSpell(264);
+                    learnSpell(15590);
+                    learnSpell(674);
+                    learnSpell(198);
+                    break;
+                case CLASS_PALADIN:
+                    learnSpell(7328);
+                    learnSpell(750);
+                    learnSpell(198);
+                    learnSpell(199);
+                    learnSpell(201);
+                    learnSpell(200);
+                    learnSpell(202);
+                    if (!HasItemCount(21177, 100, true))
+                        AddItem(21177, 100);
+                    if (!HasItemCount(17033, 5, true))
+                        AddItem(17033, 5);
+                    break;
+                case CLASS_HUNTER:
+                {
+                    learnSpell(1515);
+                    learnSpell(883);
+                    learnSpell(2641);
+                    learnSpell(5149);
+                    learnSpell(6991);
+                    learnSpell(982);
+                    learnSpell(200);
+                    learnSpell(264);
+                    learnSpell(197);
+                    learnSpell(1180);
+                    learnSpell(674);
+                    learnSpell(5011);
+                    if (!HasItemCount(28056, 1000, true)) //arrows
+                        AddItem(28056, 1000);
+                    learnSpell(8737);
+                    if (getRace() == RACE_DWARF)
+                        if (!HasItemCount(2101, 1, true)) //quiver
+                            AddItem(2101, 1);
+                }
+                    break;
+                case CLASS_ROGUE:
+                    learnSpell(1804);
+                    SetSkill(633, 350, 300);
+                    learnSpell(2842);
+                    SetSkill(40, 350, 300);
+                    learnSpell(201);
+                    learnSpell(674);
+                    learnSpell(2567);
+                    learnSpell(15590);
+                    if (!HasItemCount(5140, 20, true))
+                        AddItem(5140, 20);
+                    break;
+                case CLASS_PRIEST:
+                    learnSpell(198);
+                    learnSpell(227);
+                    if (!HasItemCount(17029, 20, true))
+                        AddItem(17029, 20);
+                    break;
+                case CLASS_SHAMAN:
+                    AddItem(5175, 1);
+                    AddItem(5176, 1);
+                    AddItem(5177, 1);
+                    AddItem(5178, 1);
+                    learnSpell(8071);
+                    learnSpell(3599);
+                    learnSpell(5394);
+                    learnSpell(196);
+                    learnSpell(15590);
+                    learnSpell(8737);
+                    learnSpell(227);
+                    learnSpell(198);
+                    learnSpell(197);
+                    learnSpell(1180);
+                    AddItem(17030, 10);
+                    AddItem(17058, 20);
+                    AddItem(17057, 20);
+                    break;
+                case CLASS_MAGE:
+                    learnSpell(227);
+                    if (!HasItemCount(17020, 20, true))
+                        AddItem(17020, 20);
+                    if (!HasItemCount(17032, 5, true))
+                        AddItem(17032, 5);
+                    if (!HasItemCount(17031, 5, true))
+                        AddItem(17031, 5);
+                    learnSpell(201);
+                    break;
+                case CLASS_DRUID:
+                    learnSpell(18960);
+                    learnSpell(1066);
+                    learnSpell(6795);
+                    learnSpell(5487);
+                    learnSpell(6807);
+                    learnSpell(227);
+                    learnSpell(198);
+                    if (!HasItemCount(17026, 20, true))
+                        AddItem(17026, 20);
+                    if (!HasItemCount(22147, 10, true))
+                        AddItem(22147, 10);
+                    break;
+                case CLASS_WARLOCK:
+                    learnSpell(688);
+                    learnSpell(697);
+                    learnSpell(712);
+                    learnSpell(691);
+                    if (!HasItemCount(6265, 5, true))
+                        AddItem(6265, 5);
+                    learnSpell(227);
+                    learnSpell(201);
+                    break;
+            }
+            break;
+    }
+        case HORDE:
+        {
+            switch (getRace())
+            {
+                case RACE_BLOODELF:
+                    if (!HasItemCount(29223, 1, true))
+                        AddItem(29223, 1);
+                    break;
+                case RACE_ORC:
+                    if (!HasItemCount(18797, 1, true))
+                        AddItem(18797, 1);
+                    break;
+                case RACE_UNDEAD_PLAYER:
+                    if (!HasItemCount(13334, 1, true))
+                        AddItem(13334, 1);
+                    break;
+                case RACE_TAUREN:
+                    if (!HasItemCount(18795, 1, true))
+                        AddItem(18795, 1);
+                    break;
+                case RACE_TROLL:
+                    if (!HasItemCount(18788, 1, true))
+                        AddItem(18788, 1);
+                    break;
+            }
+
+            switch (getClass())
+            {
+                case CLASS_WARRIOR:
+                    learnSpell(71);
+                    learnSpell(355);
+                    learnSpell(7386);
+                    learnSpell(2458);
+                    learnSpell(20252);
+                    learnSpell(200);
+                    learnSpell(750);
+                    learnSpell(197);
+                    learnSpell(196);
+                    learnSpell(201);
+                    learnSpell(2567);
+                    learnSpell(266);
+                    learnSpell(264);
+                    learnSpell(15590);
+                    learnSpell(674);
+                    learnSpell(198);
+                    learnSpell(199);
+                    learnSpell(200);
+                    learnSpell(202);
+                    break;
+                case CLASS_PALADIN:
+                    learnSpell(7328);
+                    learnSpell(750);
+                    learnSpell(198);
+                    learnSpell(199);
+                    learnSpell(201);
+                    learnSpell(200);
+                    learnSpell(202);
+                    if (!HasItemCount(21177, 100, true))
+                        AddItem(21177, 100);
+                    if (!HasItemCount(17033, 5, true))
+                        AddItem(17033, 5);
+                    break;
+                case CLASS_HUNTER:
+                {
+                    learnSpell(1515);
+                    learnSpell(883);
+                    learnSpell(2641);
+                    learnSpell(5149);
+                    learnSpell(6991);
+                    learnSpell(982);
+                    learnSpell(200);
+                    learnSpell(264);
+                    learnSpell(197);
+                    learnSpell(1180);
+                    learnSpell(674);
+                    learnSpell(5011);
+                    if (!HasItemCount(28056, 1000, true)) //arrows
+                        AddItem(28056, 1000);
+                    learnSpell(8737);
+                    if (getRace() == RACE_TAUREN)
+                        if (!HasItemCount(2101, 1, true)) //quiver
+                            AddItem(2101, 1);
+                }
+                    break;
+                case CLASS_ROGUE:
+                    learnSpell(1804);
+                    SetSkill(633, 350, 300);
+                    learnSpell(2842);
+                    SetSkill(40, 350, 300);
+                    learnSpell(201);
+                    learnSpell(674);
+                    learnSpell(2567);
+                    learnSpell(15590);
+                    if (!HasItemCount(5140, 20, true))
+                        AddItem(5140, 20);
+                    break;
+                case CLASS_PRIEST:
+                    learnSpell(198);
+                    learnSpell(227);
+                    if (!HasItemCount(17029, 20, true))
+                        AddItem(17029, 20);
+                    break;
+                case CLASS_SHAMAN:
+                    AddItem(5175, 1);
+                    AddItem(5176, 1);
+                    AddItem(5177, 1);
+                    AddItem(5178, 1);
+                    learnSpell(8071);
+                    learnSpell(3599);
+                    learnSpell(5394);
+                    learnSpell(196);
+                    learnSpell(15590);
+                    learnSpell(8737);
+                    learnSpell(227);
+                    learnSpell(198);
+                    learnSpell(197);
+                    learnSpell(1180);
+                    AddItem(17030, 10);
+                    AddItem(17058, 20);
+                    AddItem(17057, 20);
+                    break;
+                case CLASS_MAGE:
+                    learnSpell(227);
+                    if (!HasItemCount(17020, 20, true))
+                        AddItem(17020, 20);
+                    if (!HasItemCount(17032, 5, true))
+                        AddItem(17032, 5);
+                    if (!HasItemCount(17031, 5, true))
+                        AddItem(17031, 5);
+                    learnSpell(201);
+                    break;
+                case CLASS_DRUID:
+                    learnSpell(18960);
+                    learnSpell(1066);
+                    learnSpell(6795);
+                    learnSpell(5487);
+                    learnSpell(6807);
+                    learnSpell(227);
+                    learnSpell(198);
+                    if (!HasItemCount(17026, 20, true))
+                        AddItem(17026, 20);
+                    if (!HasItemCount(22147, 10, true))
+                        AddItem(22147, 10);
+                    break;
+                case CLASS_WARLOCK:
+                    learnSpell(688);
+                    learnSpell(697);
+                    learnSpell(712);
+                    learnSpell(691);
+                    if (!HasItemCount(6265, 5, true))
+                        AddItem(6265, 5);
+                    learnSpell(227);
+                    learnSpell(201);
+                    break;
+            }
+            break;
+        }
+    }
+    UpdateSkillsToMaxSkillsForLevel();
+
+    for (uint16 i = 0; i < 18; i++)
+    {
+        DestroyItem(255, i, true);
+    }
+
+    for (uint16 i = 0; i < 18; i++)
+    {
+        if (items[i] != 0)
+        {
+            Item *item = EquipNewItem(i, items[i], true);
+            if (item)
+                item->SendCreateUpdateToPlayer(this);
+        }
+    }
+    SaveToDB();
+}
+
+
+
+
+
+
+
+
 
 void Player::EquipForPush(uint16 items[])
 {
@@ -21182,16 +21856,17 @@ void Player::EquipForPush(uint16 items[])
                     learnSpell(198);
                     break;
                 case CLASS_PALADIN:
-                    learnSpell(750);
                     learnSpell(7328);
+                    learnSpell(750);
                     learnSpell(198);
                     learnSpell(199);
                     learnSpell(201);
                     learnSpell(200);
+                    learnSpell(202);
                     if (!HasItemCount(21177, 100, true))
                         AddItem(21177, 100);
                     if (!HasItemCount(17033, 5, true))
-                    AddItem(17033, 5);
+                        AddItem(17033, 5);
                     break;
                 case CLASS_HUNTER:
                 {
@@ -21328,9 +22003,8 @@ void Player::EquipForPush(uint16 items[])
                     learnSpell(201);
                     learnSpell(2567);
                     learnSpell(266);
+                    learnSpell(15590);
                     learnSpell(264);
-                    learnSpell(15590);
-                    learnSpell(15590);
                     learnSpell(674);
                     learnSpell(198);
                     break;
@@ -21361,11 +22035,11 @@ void Player::EquipForPush(uint16 items[])
                     learnSpell(1180);
                     learnSpell(674);
                     learnSpell(5011);
-                    if (!HasItemCount(28056, 1000, true))
+                    if (!HasItemCount(28056, 1000, true)) //arrows
                         AddItem(28056, 1000);
                     learnSpell(8737);
                     if (getRace() == RACE_TAUREN)
-                        if (!HasItemCount(2101, 1, true))
+                        if (!HasItemCount(2101, 1, true)) //quiver
                             AddItem(2101, 1);
                 }
                     break;
@@ -21414,6 +22088,7 @@ void Player::EquipForPush(uint16 items[])
                         AddItem(17032, 5);
                     if (!HasItemCount(17031, 5, true))
                         AddItem(17031, 5);
+                    learnSpell(201);
                     break;
                 case CLASS_DRUID:
                     learnSpell(18960);
@@ -21436,6 +22111,7 @@ void Player::EquipForPush(uint16 items[])
                     if (!HasItemCount(6265, 5, true))
                         AddItem(6265, 5);
                     learnSpell(227);
+                    learnSpell(201);
                     break;
             }
             break;
@@ -21480,32 +22156,32 @@ void Player::EquipForPushSixty(uint16 items[])
 
     AddItem(22895, 20); //something to eat
     AddItem(30703, 20); //something to drink
-
+    
     switch (GetTeam())
     {
         case ALLIANCE:
         {
             switch (getRace())
             {
-                case RACE_HUMAN:
-                    if (!HasItemCount(2414, 1, true))
-                        AddItem(2414, 1);
+            case RACE_HUMAN:
+                if (!HasItemCount(18778, 1, true))  //Mount
+                    AddItem(18778, 1);
                     break;
-                case RACE_DWARF:
-                    if (!HasItemCount(5872, 1, true))
-                        AddItem(5872, 1);
+            case RACE_DWARF:
+                if (!HasItemCount(18787, 1, true))  //Mount
+                    AddItem(18787, 1);
                     break;
-                case RACE_NIGHTELF:
-                    if (!HasItemCount(8629, 1, true))
-                        AddItem(8629, 1);
+            case RACE_NIGHTELF:
+                if (!HasItemCount(18767, 1, true))  //Mount
+                    AddItem(18767, 1);
                     break;
-                case RACE_GNOME:
-                    if (!HasItemCount(13321, 1, true))
-                    AddItem(13321, 1);
+            case RACE_GNOME:
+                if (!HasItemCount(18772, 1, true))  //Mount
+                    AddItem(18772, 1);
                     break;
-                case RACE_DRAENEI:
-                    if (!HasItemCount(29743, 1, true))
-                        AddItem(29743, 1);
+            case RACE_DRAENEI:
+                if (!HasItemCount(29745, 1, true))  //Mount
+                    AddItem(29745, 1);
                     break;
             }
 
@@ -21523,22 +22199,23 @@ void Player::EquipForPushSixty(uint16 items[])
                     learnSpell(201);
                     learnSpell(2567);
                     learnSpell(266);
-                    learnSpell(15590);
                     learnSpell(264);
+                    learnSpell(15590);
                     learnSpell(674);
                     learnSpell(198);
                     break;
                 case CLASS_PALADIN:
-                    learnSpell(750);
                     learnSpell(7328);
+                    learnSpell(750);
                     learnSpell(198);
                     learnSpell(199);
                     learnSpell(201);
                     learnSpell(200);
+                    learnSpell(202);
                     if (!HasItemCount(21177, 100, true))
                         AddItem(21177, 100);
                     if (!HasItemCount(17033, 5, true))
-                    AddItem(17033, 5);
+                        AddItem(17033, 5);
                     break;
                 case CLASS_HUNTER:
                 {
@@ -21563,9 +22240,9 @@ void Player::EquipForPushSixty(uint16 items[])
                     break;
                 case CLASS_ROGUE:
                     learnSpell(1804);
-                    SetSkill(633, 350, 350);
+                    SetSkill(633, 350, 300);
                     learnSpell(2842);
-                    SetSkill(40, 350, 350);
+                    SetSkill(40, 350, 300);
                     learnSpell(201);
                     learnSpell(674);
                     learnSpell(2567);
@@ -21672,7 +22349,6 @@ void Player::EquipForPushSixty(uint16 items[])
                     learnSpell(266);
                     learnSpell(264);
                     learnSpell(15590);
-                    learnSpell(15590);
                     learnSpell(674);
                     learnSpell(198);
                     break;
@@ -21683,6 +22359,7 @@ void Player::EquipForPushSixty(uint16 items[])
                     learnSpell(199);
                     learnSpell(201);
                     learnSpell(200);
+                    learnSpell(202);
                     if (!HasItemCount(21177, 100, true))
                         AddItem(21177, 100);
                     if (!HasItemCount(17033, 5, true))
@@ -21750,6 +22427,7 @@ void Player::EquipForPushSixty(uint16 items[])
                     learnSpell(227);
                     if (!HasItemCount(17020, 20, true))
                         AddItem(17020, 20);
+                    learnSpell(201);
                     break;
                 case CLASS_DRUID:
                     learnSpell(18960);
@@ -21772,6 +22450,7 @@ void Player::EquipForPushSixty(uint16 items[])
                     if (!HasItemCount(6265, 5, true))
                         AddItem(6265, 5);
                     learnSpell(227);
+                    learnSpell(201);
                     break;
             }
             break;
@@ -21905,6 +22584,44 @@ void Player::FinishPush()
     SaveToDB();
 }
 
+void Player::FinishPushTransfer()
+{
+    m_homebindMapId = 530;
+    m_homebindZoneId = 3703;
+    m_homebindX = -1853.01f;
+    m_homebindY = 5460.62f;
+    m_homebindZ = -12.40f;
+
+    RealmDataDatabase.PExecute("UPDATE character_homebind SET map='%u', zone='%u', position_x='%f', position_y='%f', position_z='%f' WHERE guid='%u'", m_homebindMapId, m_homebindZoneId, m_homebindX, m_homebindY, m_homebindZ, GUID_LOPART(GetGUID()));
+
+    WorldPacket data(SMSG_BINDPOINTUPDATE, (4 + 4 + 4 + 4 + 4));
+    data << float(m_homebindX);
+    data << float(m_homebindY);
+    data << float(m_homebindZ);
+    data << uint32(m_homebindMapId);
+    data << uint32(m_homebindZoneId);
+    GetSession()->SendPacket(&data);
+
+    SaveToDB();
+
+    switch (GetTeam())
+    {
+        case ALLIANCE:
+        {
+            m_taxi.LoadTaxiMask("3456411898 2148078929 805356359 2605711384 137366529 262240 1052676 0 ");
+            break;
+        }
+        case HORDE:
+        {
+            m_taxi.LoadTaxiMask("830150144 315656864 449720 3869245476 3227522050 262180 1048576 0 ");
+        
+            break;
+        }
+    }
+    InitTaxiNodesForLevel();
+    SaveToDB();
+}
+
 void Player::FinishPushSixty()
 {
     RealmDataDatabase.PExecute("UPDATE character_homebind SET map='%u', zone='%u', position_x='%f', position_y='%f', position_z='%f' WHERE guid='%u'", 0, 4, -11789.0f, -3171.169922f, -29.0f, GUID_LOPART(GetGUID()));
@@ -22029,14 +22746,17 @@ void Player::AddItem(uint32 itemID, uint32 Count)
         }
 }
 
-bool Player::StopLevel(uint64 charid){
-    // Check if account premium
+bool Player::StopLevel(uint64 charid)
+{
+    if (!charid)
+        return false;
+
     QueryResultAutoPtr stoplevelresult = RealmDataDatabase.PQuery ("SELECT 1 "
      "FROM character_stop_level "
      "WHERE id = '%u' "
      "AND active = 1",
      charid);
-    if (stoplevelresult) // if account premium
+    if (stoplevelresult) // if char stopped gaining of xp
     {
         return true;
     }
@@ -22090,24 +22810,24 @@ void Player::EnchantItem(uint32 spellid, uint8 slot)
 {
     Item* pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
 
-	if (spellid == 0)
-		return;
+    if (spellid == 0)
+        return;
 
     if (!pItem)
     {
         ChatHandler(GetSession()).PSendSysMessage("%s[VZ NPC]%s Dein Item konnte leider nicht verzaubert werden, da sich kein Item in dem angegebenen Slot befindet.",MSG_COLOR_MAGENTA,MSG_COLOR_WHITE);
         return;
     }
-	/*Special cases für die Schilde, die sind doof ._.*/
-	if(pItem->GetProto()->Class == 4 && pItem->GetProto()->SubClass == 6)
-		if (spellid == 44383 || spellid == 34009 || spellid == 27945 || spellid == 27947 || spellid == 27946 || spellid == 20016 || spellid == 11224 || spellid == 13464 || spellid == 23530){}
-		else
-		{
-			ChatHandler(GetSession()).PSendSysMessage("%s[VZ NPC]%s Dein Item konnte nicht verzaubert werden, da ein falsches item angelegt ist.",MSG_COLOR_MAGENTA,MSG_COLOR_WHITE);
-			return;
-		}
+    /*Special cases für die Schilde, die sind doof ._.*/
+    if(pItem->GetProto()->Class == 4 && pItem->GetProto()->SubClass == 6)
+        if (spellid == 44383 || spellid == 34009 || spellid == 27945 || spellid == 27947 || spellid == 27946 || spellid == 20016 || spellid == 11224 || spellid == 13464 || spellid == 23530){}
+        else
+        {
+            ChatHandler(GetSession()).PSendSysMessage("%s[VZ NPC]%s Dein Item konnte nicht verzaubert werden, da ein falsches item angelegt ist.",MSG_COLOR_MAGENTA,MSG_COLOR_WHITE);
+            return;
+        }
     if (pItem->GetEntry() == 33681 || pItem->GetEntry() == 33736 || pItem->GetEntry() == 34033)
-	    return;
+        return;
 
     SpellEntry const* spellInfo = sSpellStore.LookupEntry(spellid);
     if (!spellInfo)
@@ -22128,11 +22848,11 @@ void Player::EnchantItem(uint32 spellid, uint8 slot)
         ChatHandler(GetSession()).PSendSysMessage("%s[VZ NPC]%s Dein Item konnte nicht verzaubert werden, da ein falsches Item angelegt ist.",MSG_COLOR_MAGENTA,MSG_COLOR_WHITE);
         return;
     }
-	//Item *item, EnchantmentSlot slot, bool apply, bool apply_dur, bool ignore_condition
+    //Item *item, EnchantmentSlot slot, bool apply, bool apply_dur, bool ignore_condition
     ApplyEnchantment(pItem, PERM_ENCHANTMENT_SLOT, false);
     pItem->SetEnchantment(PERM_ENCHANTMENT_SLOT, enchantid, 0, 0);
     ApplyEnchantment(pItem, PERM_ENCHANTMENT_SLOT, true);
-	ChatHandler(GetSession()).PSendSysMessage("%s[VZ NPC]%s Dein Item wurde erfolgreich verzaubert!",MSG_COLOR_MAGENTA,MSG_COLOR_WHITE);
+    ChatHandler(GetSession()).PSendSysMessage("%s[VZ NPC]%s Dein Item wurde erfolgreich verzaubert!",MSG_COLOR_MAGENTA,MSG_COLOR_WHITE);
 }
 
 bool Player::isInSanctuary()
@@ -22431,3 +23151,209 @@ Unit* Player::GetNearBossInCombat()
     }
     return NULL;
 }
+
+void Player::_LoadInstanceTimeRestrictions(QueryResultAutoPtr result)
+{
+    if (!result)
+        return;
+
+    do 
+    {
+        Field* fields = result->Fetch();
+        _instanceResetTimes.insert(InstanceTimeMap::value_type(fields[0].GetUInt32(), fields[1].GetUInt64()));
+    } while (result->NextRow());
+}
+
+void Player::_SaveInstanceTimeRestrictions()
+{
+    if (_instanceResetTimes.empty() || !GetSession())  
+        return;
+
+    static SqlStatementID deleteAccountInstance;
+    static SqlStatementID insertIntoAccountInstance;
+
+    SqlStatement stmt = RealmDataDatabase.CreateStatement(deleteAccountInstance, "DELETE FROM account_instance_times WHERE accountId = ?");
+    stmt.PExecute(GetSession()->GetAccountId());
+    
+    for (InstanceTimeMap::const_iterator itr = _instanceResetTimes.begin(); itr != _instanceResetTimes.end(); ++itr)
+    {
+        SqlStatement stmt = RealmDataDatabase.CreateStatement(insertIntoAccountInstance, "INSERT INTO account_instance_times (accountId, instanceId, releaseTime) VALUES (?, ?, ?)");
+        stmt.PExecute(GetSession()->GetAccountId(), itr->first, itr->second);
+    }
+}
+
+/* Addon Helper START */
+
+void Player::SendAddonMessage(std::string& text, char* prefix)
+{
+    std::string message;
+    message.append(prefix);
+    message.push_back(9);
+    message.append(text);
+
+    WorldPacket data(SMSG_MESSAGECHAT, 200);
+    data << uint8(CHAT_MSG_WHISPER);
+    data << uint32(LANG_ADDON);
+    data << uint64(0); // guid
+    data << uint32(LANG_ADDON);                               //language 2.1.0 ?
+    data << uint64(0); // guid
+    data << uint32(message.length() + 1);
+    data << message;
+    data << uint8(0);
+    BroadcastPacketInRange(&data, MAX_VISIBILITY_DISTANCE, false, false);
+}
+
+WorldPacket Player::CreateAddonMessage(std::string& text, char* prefix)
+{
+    std::string message;
+    message.append(prefix);
+    message.push_back(9);
+    message.append(text);
+
+    WorldPacket data(SMSG_MESSAGECHAT, 200);
+    data << uint8(CHAT_MSG_WHISPER);
+    data << uint32(LANG_ADDON);
+    data << uint64(0); // guid
+    data << uint32(LANG_ADDON);                               //language 2.1.0 ?
+    data << uint64(0); // guid
+    data << uint32(message.length() + 1);
+    data << message;
+    data << uint8(0);
+    return data;
+}
+
+char *GetClassString(uint8 _Class)
+{
+    switch (_Class)
+    {
+        case CLASS_WARRIOR: return "WARRIOR"; break;
+        case CLASS_PALADIN: return "PALADIN"; break;
+        case CLASS_HUNTER:  return "HUNTER";  break;
+        case CLASS_ROGUE:   return "ROGUE";   break;
+        case CLASS_PRIEST:  return "PRIEST";  break;
+        case CLASS_SHAMAN:  return "SHAMAN";  break;
+        case CLASS_MAGE:    return "MAGE";    break;
+        case CLASS_WARLOCK: return "WARLOCK"; break;
+        case CLASS_DRUID:   return "DRUID";   break;
+        default: return ""; break;
+    }
+}
+
+char *GetClassLocalString(uint8 _Class)
+{
+    switch (_Class)
+    {
+        case CLASS_WARRIOR: return "Warrior"; break;
+        case CLASS_PALADIN: return "Paladin"; break;
+        case CLASS_HUNTER:  return "Hunter";  break;
+        case CLASS_ROGUE:   return "Rogue";   break;
+        case CLASS_PRIEST:  return "Priest";  break;
+        case CLASS_SHAMAN:  return "Shaman";  break;
+        case CLASS_MAGE:    return "Mage";    break;
+        case CLASS_WARLOCK: return "Warlock"; break;
+        case CLASS_DRUID:   return "Druid";   break;
+        default: return ""; break;
+    }
+}
+
+char *GetRaceLocalString(uint8 _Race)
+{
+    switch (_Race)
+    {
+        case RACE_HUMAN:         return "Human";    break;
+        case RACE_ORC:           return "Orc";      break;
+        case RACE_DWARF:         return "Dwarf";    break;
+        case RACE_NIGHTELF:      return "Nightelf"; break;
+        case RACE_UNDEAD_PLAYER: return "Undead";   break;
+        case RACE_TAUREN:        return "Tauren";   break;
+        case RACE_GNOME:         return "Gnome";    break;
+        case RACE_TROLL:         return "Troll";    break;
+        case RACE_BLOODELF:      return "Bloodelf"; break;
+        case RACE_DRAENEI:       return "Draenei";  break;
+        default: return ""; break;
+    }
+}
+
+class GladdyUpdate
+{
+public:
+    std::string msg;
+
+    GladdyUpdate(Player *p)
+    {
+        msg = "";
+        msg.append(p->GetName());
+        msg.push_back(',');
+    }
+
+    void AppendGUID(uint64 unitGUID)
+    {
+        std::stringstream sstream;
+        sstream << "0x" << std::setfill('0') << std::setw(sizeof(uint64) * 2) << std::hex << std::uppercase << unitGUID;
+        msg.append(sstream.str());
+        msg.push_back(',');
+    }
+
+    void Append(uint32 data)
+    {
+        std::ostringstream os;
+        os << data;
+        msg.append(os.str());
+        msg.push_back(',');
+    }
+
+    void AppendChar(char* prefix)
+    {
+        msg.append(prefix);
+        msg.push_back(',');
+    }
+
+    void AppendLast(uint32 data)
+    {
+        std::ostringstream os;
+        os << data;
+        msg.append(os.str());
+    }
+};
+
+WorldPacket Player::BuildGladdyUpdate()
+{
+    Powers type = getPowerType();
+    int32 maxPower;
+    int32 currentPower;
+    if (type == POWER_RAGE)
+    {
+        currentPower = GetPower(type) / 10;
+        maxPower = GetMaxPower(type) / 10;
+    }
+    else
+    {
+        currentPower = GetPower(type);
+        maxPower = GetMaxPower(type);
+    }
+
+    GladdyUpdate update(this);
+    update.AppendGUID(GetGUID());
+    update.AppendChar(GetClassString(getClass())); // class
+    update.AppendChar(GetClassLocalString(getClass())); // locclass
+    update.AppendChar(GetRaceLocalString(getRace())); // locrace
+    update.AppendChar(""); // correct
+    update.Append(GetHealth());
+    update.Append(GetMaxHealth());
+    update.Append(currentPower);
+    update.Append(maxPower);
+    update.AppendLast(type);
+
+    return CreateAddonMessage(update.msg, "Gladdy");
+}
+
+void Player::SendGladdyNotification()
+{
+    std::stringstream sstream;
+    sstream << "0x" << std::setfill('0') << std::setw(sizeof(uint64) * 2) << std::hex << std::uppercase << GetGUID();
+    std::string result = sstream.str();
+
+    SendAddonMessage(result, "GladdyTrinketUsed");
+}
+
+/* Addon Helper FINISH */

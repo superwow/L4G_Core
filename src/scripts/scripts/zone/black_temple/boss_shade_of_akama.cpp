@@ -16,26 +16,44 @@
 
 /* ScriptData
 SDName: Boss_Shade_of_Akama
-SD%Complete: 90
-SDComment: Seems to be complete.
+SD%Complete: 91%
+SDComment: Eviscerate below 15%, recheck shade speed and implement spell stack based speed, akama behavior channel/attack
 SDCategory: Black Temple
 EndScriptData */
 
 #include "precompiled.h"
 #include "def_black_temple.h"
 
-#define SAY_DEATH                   -1564013
-#define SAY_LOW_HEALTH              -1564014
+#define GOSSIP_ITEM     "We are ready to fight alongside you, Akama"
+#define CHANNELERS_Z    118.538f
 
-// Ending cinematic text
-#define SAY_FREE                    -1564015
-#define SAY_BROKEN_FREE_01          -1564016
-#define SAY_BROKEN_FREE_02          -1564017
+enum shade_akama
+{
+    SAY_DEATH                                   = -1564013,
+    SAY_LOW_HEALTH                              = -1564014,
+    SAY_FREE                                    = -1564015,
+    SAY_BROKEN_FREE_01                          = -1564016,
+    SAY_BROKEN_FREE_02                          = -1564017,
 
-#define CHANNELERS_COUNT 6
-#define CHANNELERS_Z 118.538f
+    CHANNELERS_COUNT                            =        6,
+    MAX_BROKEN                                  =        8,
 
-#define MAX_BROKEN 8
+    SPELL_STEALTH                               =    34189,
+    SPELL_DESTRUCTIVE_POISON                    =    40874,
+    SPELL_CHAIN_LIGHTNING                       =    40536,
+    SPELL_VERTEX_SHADE_BLACK                    =    39833,
+    AKAMA_SOUL_EXPEL                            =    40855,
+    SPELL_AKAMA_SOUL_RETRIEVE                   =    40902,
+    SPELL_AKAMA_SOUL_CHANNEL                    =    40447,
+
+    SPELL_SHADE_SOUL_CHANNEL_CASTED_SPELL       =    40401,
+    SPELL_SHADE_SOUL_CHANNEL_ACTUAL_AURA_SPELL  =    40520,
+
+    CREATURE_CHANNELER                          =    23421,
+    CREATURE_SORCERER                           =    23215,
+    CREATURE_DEFENDER                           =    23216,
+    CREATURE_BROKEN                             =    23319
+};
 
 static float BrokenPositions[8][2] =
 {
@@ -61,9 +79,6 @@ static float BrokenMoveTo[8][2] =
     {485.928, 443.373}
 };
 
-#define SPELL_STEALTH               34189
-#define GOSSIP_ITEM                 "We are ready to fight alongside you, Akama"
-
 struct Location
 {
     float x, y, o, z;
@@ -88,29 +103,6 @@ static float SpawnLocations[2][2]=
     { 499.06, 331.73 }
 };
 
-// Spells
-#define SPELL_VERTEX_SHADE_BLACK    39833
-
-#define SPELL_SHADE_SOUL_CHANNEL    40401
-#define SPELL_SHADE_SOUL_CHANNEL_2  40520
-
-#define SPELL_DESTRUCTIVE_POISON    40874
-#define SPELL_CHAIN_LIGHTNING       40536
-
-#define SPELL_AKAMA_SOUL_CHANNEL    40447
-#define SPELL_AKAMA_SOUL_RETRIEVE   40902
-
-#define AKAMA_SOUL_EXPEL            40855
-#define SPELL_DEBILITATIG_STRIKE    41178
-#define SPELL_SHIELD_BASH           41180
-#define SPELL_HEROIC_STRIKE         41975
-
-// Channeler entry
-#define CREATURE_CHANNELER          23421
-#define CREATURE_SORCERER           23215
-#define CREATURE_DEFENDER           23216
-#define CREATURE_BROKEN             23319
-
 static const uint32 spawnEntries[3]= {23523, 23318, 23524};
 
 struct mob_ashtongue_channelerAI : public ScriptedAI
@@ -127,7 +119,7 @@ struct mob_ashtongue_channelerAI : public ScriptedAI
 
     void Reset()
     {
-        me->RemoveAurasDueToSpell(SPELL_SHADE_SOUL_CHANNEL);
+        me->RemoveAurasDueToSpell(SPELL_SHADE_SOUL_CHANNEL_CASTED_SPELL);
         m_channel = true;
     }
 
@@ -145,11 +137,16 @@ struct mob_ashtongue_channelerAI : public ScriptedAI
         {
             if (!me->GetUInt64Value(UNIT_FIELD_CHANNEL_OBJECT))
             {
-                me->RemoveAurasDueToSpell(SPELL_SHADE_SOUL_CHANNEL);
+                me->RemoveAurasDueToSpell(SPELL_SHADE_SOUL_CHANNEL_CASTED_SPELL);
                 if (Unit *shade = me->GetUnit(*me, ShadeGUID))
                 {
                     if (shade->isAlive())
-                        DoCast(shade, SPELL_SHADE_SOUL_CHANNEL);
+                    {
+                        me->SetSelection(ShadeGUID);
+                        me->SetInFront(shade);
+                        DoCast(shade, SPELL_SHADE_SOUL_CHANNEL_CASTED_SPELL);
+                    }
+                        
                 }
             }
         }
@@ -158,450 +155,6 @@ struct mob_ashtongue_channelerAI : public ScriptedAI
             if (instance)
                 ShadeGUID = instance->GetData64(DATA_SHADEOFAKAMA);
         }
-    }
-};
-
-struct mob_ashtongue_defenderAI : public ScriptedAI
-{
-    mob_ashtongue_defenderAI(Creature* c) : ScriptedAI(c)
-    {
-        instance = (ScriptedInstance*)c->GetInstanceData();
-    }
-
-    ScriptedInstance* instance;
-
-    uint32 m_debilStrikeTimer;
-    uint32 m_shieldBashTimer;
-    uint32 m_checkTimer;
-
-    void Reset()
-    {
-        ClearCastQueue();
-
-        me->ApplySpellImmune(0, IMMUNITY_STATE, SPELL_AURA_MOD_TAUNT, false);
-        me->ApplySpellImmune(0, IMMUNITY_EFFECT,SPELL_EFFECT_ATTACK_ME, false);
-
-        m_debilStrikeTimer = 10000;
-        m_shieldBashTimer = 1000;
-        m_checkTimer = 10000;
-    }
-
-    void EnterCombat(Unit *pWho)
-    {
-        DoZoneInCombat();
-    }
-
-    void DoMeleeAttackIfReady()
-    {
-        if (me->hasUnitState(UNIT_STAT_CASTING))
-            return;
-
-        //Make sure our attack is ready and we aren't currently casting before checking distance
-        if (me->isAttackReady())
-        {
-            //If we are within range melee the target
-            if (me->IsWithinMeleeRange(me->getVictim()))
-            {
-                me->AttackerStateUpdate(me->getVictim());
-                me->resetAttackTimer();
-
-                if(IS_CREATURE_GUID(me->getVictimGUID()))
-                    DoCast(me->getVictim(), SPELL_HEROIC_STRIKE, true);
-            }
-        }
-    }
-
-    void UpdateAI(const uint32 diff)
-    {
-        if (!UpdateVictim())
-            return;
-
-        if (m_debilStrikeTimer < diff)
-        {
-            AddSpellToCast(me->getVictim(), SPELL_DEBILITATIG_STRIKE);
-            m_debilStrikeTimer = 20000;
-        }
-        else
-            m_debilStrikeTimer -= diff;
-
-        if (m_shieldBashTimer < diff)
-        {
-            if (me->getVictim() && me->getVictim()->hasUnitState(UNIT_STAT_CASTING))
-            {
-                AddSpellToCast(me->getVictim(), SPELL_SHIELD_BASH);
-                m_shieldBashTimer = 10000;
-            }
-        }
-        else
-            m_shieldBashTimer -= diff;
-
-        if (m_checkTimer < diff)
-        {
-            if(!instance)
-                return;
-
-            if(Creature *pAkama = me->GetCreature(*me, instance->GetData64(DATA_SHADEOFAKAMA)))
-            {
-                if(!pAkama->isAlive())
-                {
-                    me->Kill(me, false);
-                    me->RemoveCorpse();
-                }
-            }
-            m_checkTimer = 5000;
-        }
-        else
-            m_checkTimer -= diff;
-
-        CastNextSpellIfAnyAndReady();
-        DoMeleeAttackIfReady();
-    }
-};
-
-enum spiritbinderSpells
-{
-    SPELL_CHAIN_HEAL   = 42027,
-    SPELL_SSPIRIT_HEAL = 42317,
-    SPELL_SPIRIT_MEND  = 42025
-};
-
-struct mob_ashtongue_spiritbinderAI : public ScriptedAI
-{
-    mob_ashtongue_spiritbinderAI(Creature* c) : ScriptedAI(c)
-    {
-        instance = (ScriptedInstance*)c->GetInstanceData();
-    }
-
-    ScriptedInstance* instance;
-
-    uint32 m_chainHealTimer;
-    uint32 m_spiritHealTimer;
-    uint32 m_spiritMendTimer;
-    uint32 m_checkTimer;
-
-    void Reset()
-    {
-        ClearCastQueue();
-
-        m_chainHealTimer  = urand(10000, 15000);
-        m_spiritHealTimer = urand(7000, 10000);
-        m_spiritMendTimer = urand(14000, 20000);
-        m_checkTimer = 5000;
-    }
-
-    void MoveInLineOfSight(Unit *pWho)
-    {
-        if (me->getVictim())
-            return;
-
-        if (pWho->GetTypeId() == TYPEID_PLAYER)
-        {
-            // drop PointMovement since it has higher priority than chase :P
-            me->GetMotionMaster()->MoveIdle();
-            AttackStart(pWho);
-        }
-    }
-
-    void MovementInform(uint32 type, uint32 id)
-    {
-        if (type != POINT_MOTION_TYPE)
-            return;
-
-        if (Creature *pAkama = me->GetCreature(*me, instance->GetData64(DATA_AKAMA_SHADE)))
-            AttackStart(pAkama);
-    }
-
-    /*Unit *FindSpiritHealTarget()
-    {
-        Unit *pTarget = NULL;
-
-        std::list<Creature*> m_sorcerrers = FindAllCreaturesWithEntry(CREATURE_SORCERER, 100.0f);
-        std::list<Creature*> m_channelers = FindAllCreaturesWithEntry(CREATURE_CHANNELER, 100.0f);
-
-        if (!m_sorcerrers.empty())
-        {
-            pTarget = *m_sorcerrers.begin();
-
-            for (std::list<Creature*>::iterator i = m_sorcerrers.begin(); i != m_sorcerrers.end(); i++)
-            {
-                if (!(*i)->isAlive())
-                    continue;
-
-                if ((*i)->GetHealth() < pTarget->GetHealth())
-                    pTarget = *i;
-            }
-        }
-
-        if (!m_channelers.empty())
-        {
-            if(!pTarget)
-                pTarget = *m_sorcerrers.begin();
-
-            for (std::list<Creature*>::iterator i = m_sorcerrers.begin(); i != m_sorcerrers.end(); i++)
-            {
-                if (!(*i)->isAlive())
-                    continue;
-
-                if ((*i)->GetHealth() < pTarget->GetHealth())
-                    pTarget = *i;
-            }
-        }
-
-        if (pTarget->isAlive() && pTarget->IsInWorld())
-            return pTarget;
-        else
-            return NULL;
-    }*/
-
-    void UpdateAI(const uint32 diff)
-    {
-        if (!UpdateVictim())
-            return;
-
-        if (m_chainHealTimer < diff)
-        {
-            AddSpellToCast(me, SPELL_CHAIN_HEAL, false);
-            m_chainHealTimer = 20000;
-        }
-        else
-            m_chainHealTimer -= diff;
-
-        if (m_spiritMendTimer < diff)
-        {
-            AddSpellToCast(me, SPELL_SPIRIT_MEND, false);
-            m_spiritMendTimer = 20000;
-        }
-        else
-            m_spiritMendTimer -= diff;
-
-        if (m_spiritHealTimer < diff)
-        {
-            //if(Unit *pFriend = FindSpiritHealTarget())
-            //{
-                AddSpellToCast(NULL, SPELL_SSPIRIT_HEAL, false, true);
-                m_spiritHealTimer = 10000;
-            //}
-            //else
-                //m_spiritHealTimer = 5000;
-        }
-        else
-            m_spiritHealTimer -= diff;
-
-        if (m_checkTimer < diff)
-        {
-            if(!instance)
-                return;
-
-            if(Creature *pAkama = me->GetCreature(*me, instance->GetData64(DATA_SHADEOFAKAMA)))
-            {
-                if(!pAkama->isAlive())
-                {
-                    me->Kill(me, false);
-                    me->RemoveCorpse();
-                }
-            }
-            m_checkTimer = 5000;
-        }
-        else
-            m_checkTimer -= diff;
-
-        CastNextSpellIfAnyAndReady();
-        DoMeleeAttackIfReady();
-    }
-};
-
-enum elementalistSpells
-{
-    SPELL_RAIN_OF_FIRE   = 42023,
-    SPELL_LIGHTNING_BOLT = 42024
-};
-
-struct mob_ashtongue_elementalistAI : public ScriptedAI
-{
-    mob_ashtongue_elementalistAI(Creature* c) : ScriptedAI(c)
-    {
-        instance = (ScriptedInstance*)c->GetInstanceData();
-    }
-
-    ScriptedInstance* instance;
-
-    uint32 m_rainofFireTimer;
-    uint32 m_lightningBoltTimer;
-    uint32 m_checkTimer;
-
-    void Reset()
-    {
-        ClearCastQueue();
-
-        m_rainofFireTimer  = urand(5000, 18000);
-        m_lightningBoltTimer = urand(2000, 4000);
-        m_checkTimer = 5000;
-    }
-
-    void MoveInLineOfSight(Unit *pWho)
-    {
-        if (me->getVictim())
-            return;
-
-        if (pWho->GetTypeId() == TYPEID_PLAYER)
-        {
-            // drop PointMovement since it has higher priority than chase :P
-            me->GetMotionMaster()->MoveIdle();
-            AttackStart(pWho);
-        }
-    }
-
-    void MovementInform(uint32 type, uint32 id)
-    {
-        if (type != POINT_MOTION_TYPE)
-            return;
-
-        if (Creature *pAkama = me->GetCreature(*me, instance->GetData64(DATA_AKAMA_SHADE)))
-            AttackStart(pAkama);
-    }
-
-    void UpdateAI(const uint32 diff)
-    {
-        if (!UpdateVictim())
-            return;
-
-        if (m_lightningBoltTimer < diff)
-        {
-            AddSpellToCast(me->getVictim(), SPELL_LIGHTNING_BOLT, false);
-            m_lightningBoltTimer = 10000;
-        }
-        else
-            m_lightningBoltTimer -= diff;
-
-        if (m_rainofFireTimer < diff)
-        {
-            DoZoneInCombat();
-            if(Unit *pEnemy = SelectUnit(SELECT_TARGET_RANDOM, 0, 40.0f, true))
-            {
-                AddSpellToCast(pEnemy, SPELL_RAIN_OF_FIRE, false);
-                m_rainofFireTimer = 15000;
-            }
-        }
-        else
-            m_rainofFireTimer -= diff;
-
-        if (m_checkTimer < diff)
-        {
-            if (!instance)
-                return;
-
-            if (Creature *pAkama = me->GetCreature(*me, instance->GetData64(DATA_SHADEOFAKAMA)))
-            {
-                if (!pAkama->isAlive())
-                {
-                    me->Kill(me, false);
-                    me->RemoveCorpse();
-                }
-            }
-            m_checkTimer = 5000;
-        }
-        else
-            m_checkTimer -= diff;
-
-        CastNextSpellIfAnyAndReady();
-        DoMeleeAttackIfReady();
-    }
-};
-
-enum rogueSpells
-{
-    SPELL_DEBILITATING_POISON = 41978,
-    SPELL_EVISCERATE          = 41177,
-    SPELL_DUAL_WIELD          = 29651
-};
-
-struct mob_ashtongue_rogueAI : public ScriptedAI
-{
-    mob_ashtongue_rogueAI(Creature* c) : ScriptedAI(c)
-    {
-        instance = (ScriptedInstance*)c->GetInstanceData();
-    }
-
-    ScriptedInstance* instance;
-
-    uint32 m_debilPoisonTimer;
-    uint32 m_eviscerateTimer;
-    uint32 m_checkTimer;
-
-    void Reset()
-    {
-        ClearCastQueue();
-
-        m_debilPoisonTimer  = urand(5000, 15000);
-        m_eviscerateTimer = urand(2000, 7000);
-        m_checkTimer = 5000;
-
-        ForceSpellCast(me, SPELL_DUAL_WIELD, INTERRUPT_AND_CAST);
-    }
-
-    void MoveInLineOfSight(Unit *pWho)
-    {
-        if (me->getVictim())
-            return;
-
-        if (pWho->GetTypeId() == TYPEID_PLAYER)
-        {
-            // drop PointMovement since it has higher priority than chase :P
-            me->GetMotionMaster()->MoveIdle();
-            AttackStart(pWho);
-        }
-    }
-
-    void MovementInform(uint32 type, uint32 id)
-    {
-        if (type != POINT_MOTION_TYPE)
-            return;
-
-        if (Creature *pAkama = me->GetCreature(*me, instance->GetData64(DATA_AKAMA_SHADE)))
-            AttackStart(pAkama);
-    }
-
-    void UpdateAI(const uint32 diff)
-    {
-        if (!UpdateVictim())
-            return;
-
-        if (m_debilPoisonTimer < diff)
-        {
-            AddSpellToCast(me->getVictim(), SPELL_DEBILITATING_POISON, false);
-            m_debilPoisonTimer = 15000;
-        }
-        else
-            m_debilPoisonTimer -= diff;
-
-        if (m_eviscerateTimer < diff)
-        {
-            AddSpellToCast(me->getVictim(), SPELL_EVISCERATE, false);
-            m_eviscerateTimer = 10000;
-        }
-        else
-            m_eviscerateTimer -= diff;
-
-        if (m_checkTimer < diff)
-        {
-            if (!instance)
-                return;
-
-            if (Creature *pAkama = me->GetCreature(*me, instance->GetData64(DATA_SHADEOFAKAMA)))
-            {
-                if(!pAkama->isAlive())
-                {
-                    me->Kill(me, false);
-                    me->RemoveCorpse();
-                }
-            }
-            m_checkTimer = 5000;
-        }
-        else
-            m_checkTimer -= diff;
-
-        CastNextSpellIfAnyAndReady();
-        DoMeleeAttackIfReady();
     }
 };
 
@@ -629,10 +182,10 @@ struct mob_ashtongue_sorcererAI : public ScriptedAI
 
     void OnAuraRemove(Aura *aura, bool stackRemove)
     {
-        if (aura->GetSpellProto()->Id == SPELL_SHADE_SOUL_CHANNEL)
+        if (aura->GetSpellProto()->Id == SPELL_SHADE_SOUL_CHANNEL_CASTED_SPELL)
         {
             if (Unit *pShade = me->GetUnit(*me, m_shadeGUID))
-                pShade->RemoveSingleAuraFromStack(SPELL_SHADE_SOUL_CHANNEL_2, 0);
+                pShade->RemoveSingleAuraFromStack(SPELL_SHADE_SOUL_CHANNEL_ACTUAL_AURA_SPELL, 0);
         }
     }
 
@@ -644,7 +197,8 @@ struct mob_ashtongue_sorcererAI : public ScriptedAI
         if (Unit *pShade = me->GetUnit(*me, m_shadeGUID))
         {
             me->SetSelection(m_shadeGUID);
-            DoCast(pShade, SPELL_SHADE_SOUL_CHANNEL);
+            me->SetInFront(pShade);
+            DoCast(pShade, SPELL_SHADE_SOUL_CHANNEL_CASTED_SPELL);
         }
 
         m_channeling = true;
@@ -667,7 +221,8 @@ struct mob_ashtongue_sorcererAI : public ScriptedAI
                     if (pShade->isAlive())
                     {
                         me->SetSelection(m_shadeGUID);
-                        DoCast(pShade, SPELL_SHADE_SOUL_CHANNEL);
+                        me->SetInFront(pShade);
+                        DoCast(pShade, SPELL_SHADE_SOUL_CHANNEL_CASTED_SPELL);
                     }
                 }
             }
@@ -681,12 +236,11 @@ struct mob_ashtongue_sorcererAI : public ScriptedAI
 
 enum phases
 {
-    START_EVENT  = 1,  // start event
+    START_EVENT = 1,  // start event
     MOVE_PHASE_1 = 2,  // go to the stairs
     MOVE_PHASE_2 = 3,  // step down from stairs
     MOVE_PHASE_3 = 4,  // go to akama
-    AKAMA_FIGHT  = 5,  // start fight with akama
-    AKAMA_DEATH  = 10  // Akama dies after 60s of fight with shade
+    AKAMA_FIGHT = 5  // start fight with akama
 };
 
 struct boss_shade_of_akamaAI : public ScriptedAI
@@ -698,7 +252,7 @@ struct boss_shade_of_akamaAI : public ScriptedAI
         AkamaGUID = instance ? instance->GetData64(DATA_AKAMA_SHADE) : 0;
 
         me->ApplySpellImmune(0, IMMUNITY_STATE, SPELL_AURA_MOD_TAUNT, true);
-        me->ApplySpellImmune(0, IMMUNITY_EFFECT,SPELL_EFFECT_ATTACK_ME, true);
+        me->ApplySpellImmune(0, IMMUNITY_EFFECT, SPELL_EFFECT_ATTACK_ME, true);
 
         me->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_STATE_STUN);
         me->GetPosition(wLoc);
@@ -710,20 +264,20 @@ struct boss_shade_of_akamaAI : public ScriptedAI
         instance->SetData(EVENT_SHADEOFAKAMA, NOT_STARTED);
         m_summons.DespawnAll();
 
-        if(!_EnterEvadeMode())
+        if (!_EnterEvadeMode())
             return;
 
         me->SetHealth(me->GetMaxHealth());
         DespawnChannelersAndSorcerers();
 
-        if(Unit *owner = me->GetCharmerOrOwner())
+        if (Unit *owner = me->GetCharmerOrOwner())
         {
             me->GetMotionMaster()->Clear(false);
             me->GetMotionMaster()->MoveFollow(owner, PET_FOLLOW_DIST, me->GetFollowAngle());
             Reset();
         }
         else
-             me->GetMotionMaster()->MoveTargetedHome();
+            me->GetMotionMaster()->MoveTargetedHome();
     }
 
     ScriptedInstance* instance;
@@ -733,8 +287,6 @@ struct boss_shade_of_akamaAI : public ScriptedAI
     SummonList m_summons;
 
     uint64 AkamaGUID;
-
-    uint32 m_damageTimer;
 
     uint32 m_waveTimer;
     uint32 m_guardTimer;
@@ -769,7 +321,6 @@ struct boss_shade_of_akamaAI : public ScriptedAI
             akama->SetFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP);
         }
 
-        m_damageTimer = 10000;
         m_waveTimer = 7000;
         m_guardTimer = 9000;
         m_sorcTimer = 9000;
@@ -806,7 +357,7 @@ struct boss_shade_of_akamaAI : public ScriptedAI
             if (Creature *pDefender = me->SummonCreature(CREATURE_DEFENDER, SpawnLocations[0][0], SpawnLocations[0][1], SPAWN_Z, 0.0f, TEMPSUMMON_CORPSE_TIMED_DESPAWN, 15000))
             {
                 m_summons.Summon(pDefender);
-                if(Creature *pAkama = me->GetCreature(*me, AkamaGUID))
+                if (Creature *pAkama = me->GetCreature(*me, AkamaGUID))
                 {
                     pDefender->AddThreat(pAkama, 100000.0f);
                     pDefender->AI()->AttackStart(pAkama);
@@ -863,7 +414,7 @@ struct boss_shade_of_akamaAI : public ScriptedAI
 
     void OnAuraApply(Aura *aura, Unit *, bool stackApply)
     {
-        if (aura->GetSpellProto()->Id == SPELL_SHADE_SOUL_CHANNEL_2)
+        if (aura->GetSpellProto()->Id == SPELL_SHADE_SOUL_CHANNEL_ACTUAL_AURA_SPELL)
         {
             SetBanish(true);
             m_updateSpeed = true;
@@ -874,7 +425,7 @@ struct boss_shade_of_akamaAI : public ScriptedAI
     }
     void OnAuraRemove(Aura *aura, bool stackRemove)
     {
-        if (aura->GetSpellProto()->Id == SPELL_SHADE_SOUL_CHANNEL_2)
+        if (aura->GetSpellProto()->Id == SPELL_SHADE_SOUL_CHANNEL_ACTUAL_AURA_SPELL)
         {
             ++m_freeSlot;
 
@@ -913,21 +464,6 @@ struct boss_shade_of_akamaAI : public ScriptedAI
         m_freeSlot = 0;
     }
 
-    void DamageMade(Unit *target, uint32 &damage, bool direct_damage)
-    {
-        if (target->GetGUID() == AkamaGUID)
-        {
-            if (event_phase == AKAMA_FIGHT)
-            {
-                SetBanish(false);
-                TurnOffChanneling();
-
-                target->InterruptNonMeleeSpells(false);
-                ((Creature *)target)->AI()->AttackStart(me);
-            }
-        }
-    }
-
     void JustReachedHome()
     {
         Reset();
@@ -940,28 +476,28 @@ struct boss_shade_of_akamaAI : public ScriptedAI
 
         switch (id)
         {
-            case 0:
+        case 0:
+        {
+            event_phase = MOVE_PHASE_2;
+            m_updateSpeed = true;         // Just to force next path
+            break;
+        }
+        case 1:
+        {
+            event_phase = MOVE_PHASE_3;
+            m_updateSpeed = true;         // Just to force next path
+            break;
+        }
+        case 2:
+        {
+            event_phase = AKAMA_FIGHT;
+            if (Creature *pAkama = me->GetCreature(*me, AkamaGUID))
             {
-                event_phase = MOVE_PHASE_2;
-                m_updateSpeed = true;         // Just to force next path
-                break;
+                me->AddThreat(pAkama, 1000000.0f);
+                me->AI()->AttackStart(pAkama);
             }
-            case 1:
-            {
-                event_phase = MOVE_PHASE_3;
-                m_updateSpeed = true;         // Just to force next path
-                break;
-            }
-            case 2:
-            {
-                event_phase = AKAMA_FIGHT;
-                if (Creature *pAkama = me->GetCreature(*me, AkamaGUID))
-                {
-                    me->AddThreat(pAkama, 1000000.0f);
-                    me->AI()->AttackStart(pAkama);
-                }
-                break;
-            }
+            break;
+        }
         }
     }
 
@@ -1006,8 +542,8 @@ struct boss_shade_of_akamaAI : public ScriptedAI
             float pos_y = me->GetPositionY();
             for (int i = 0; i < CHANNELERS_COUNT; ++i)
             {
-                float x = pos_x + 15.0f * cos(M_PI/3 * i);
-                float y = pos_y + 15.0f * sin(M_PI/3 * i);
+                float x = pos_x + 15.0f * cos(M_PI / 3 * i);
+                float y = pos_y + 15.0f * sin(M_PI / 3 * i);
                 Creature *channeler = me->SummonCreature(CREATURE_CHANNELER, x, y, CHANNELERS_Z, 0.0f, TEMPSUMMON_MANUAL_DESPAWN, 0);
                 if (channeler)
                 {
@@ -1085,7 +621,7 @@ struct boss_shade_of_akamaAI : public ScriptedAI
 
                     if (event_phase == MOVE_PHASE_1 || event_phase == MOVE_PHASE_2)
                     {
-                        int i = event_phase%2;
+                        int i = event_phase % 2;
 
                         me->GetMotionMaster()->MovementExpired();
                         me->StopMoving();
@@ -1102,7 +638,7 @@ struct boss_shade_of_akamaAI : public ScriptedAI
                     m_updateSpeed = false;
                 }
 
-                if(me->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE))
+                if (me->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE))
                     ProcessSpawning(diff);
 
                 if (m_checkTimer < diff)
@@ -1118,29 +654,14 @@ struct boss_shade_of_akamaAI : public ScriptedAI
                     m_checkTimer -= diff;
 
                 if (event_phase >= AKAMA_FIGHT)
-                {
-                    if (m_damageTimer < diff)
+                    if (Unit *akama = me->GetUnit(*me, AkamaGUID))
                     {
-                        if (AkamaGUID)
+                        if (akama->isAlive())
                         {
-                            Creature *akama = me->GetCreature(*me, AkamaGUID);
-                            if (akama && akama->isAlive())
-                            {
-                                int damage = akama->GetMaxHealth()/12;
-                                if (event_phase == AKAMA_DEATH) // after 60s deal damage equal to hp
-                                    damage = akama->GetHealth();
-
-                                me->DealDamage(akama, damage, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, NULL, false);
-                                m_damageTimer = 10000;
-                                ++event_phase;
-                            }
-                            else
-                                EnterEvadeMode();
+                            me->SetSelection(AkamaGUID);
+                            me->SetInFront(akama);
                         }
                     }
-                    else
-                        m_damageTimer -= diff;
-                }
             }
         }
         DoMeleeAttackIfReady();
@@ -1149,16 +670,16 @@ struct boss_shade_of_akamaAI : public ScriptedAI
 
 void mob_ashtongue_channelerAI::OnAuraRemove(Aura *aura, bool stackRemove)
 {
-    if (aura->GetSpellProto()->Id == SPELL_SHADE_SOUL_CHANNEL)
+    if (aura->GetSpellProto()->Id == SPELL_SHADE_SOUL_CHANNEL_CASTED_SPELL)
     {
         if (Unit *shade = me->GetUnit(*me, ShadeGUID))
-            shade->RemoveSingleAuraFromStack(SPELL_SHADE_SOUL_CHANNEL_2, 0);
+            shade->RemoveSingleAuraFromStack(SPELL_SHADE_SOUL_CHANNEL_ACTUAL_AURA_SPELL, 0);
     }
 }
 
 struct npc_akamaAI : public Scripted_NoMovementAI
 {
-    npc_akamaAI(Creature* c) : Scripted_NoMovementAI(c), m_summons(me)
+    npc_akamaAI(Creature* c) : Scripted_NoMovementAI(c), m_summons(me), isCasting(false)
     {
         instance = (ScriptedInstance *)c->GetInstanceData();
         ShadeGUID = instance ? instance->GetData64(DATA_SHADEOFAKAMA) : 0;
@@ -1185,6 +706,7 @@ struct npc_akamaAI : public Scripted_NoMovementAI
     uint32 m_talkTimer;
 
     bool m_yell;
+    bool isCasting;
 
     SummonList m_summons;
 
@@ -1196,6 +718,7 @@ struct npc_akamaAI : public Scripted_NoMovementAI
         m_lightningBoltTimer = 8000;
 
         m_yell = false;
+        isCasting = false;
         m_talk = 0;
         m_talkTimer = 0;
 
@@ -1222,6 +745,7 @@ struct npc_akamaAI : public Scripted_NoMovementAI
         instance->SetData(EVENT_SHADEOFAKAMA, IN_PROGRESS);
         me->RemoveFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP);
         me->RemoveAurasDueToSpell(SPELL_STEALTH);
+        me->SetWalk(true);
         me->GetMotionMaster()->MovePoint(0, AKAMA_X, AKAMA_Y, AKAMA_Z);
     }
 
@@ -1232,55 +756,62 @@ struct npc_akamaAI : public Scripted_NoMovementAI
 
         switch (id)
         {
-            case 0:
+        case 0:
+        {
+            if (!instance)
             {
-                if (!instance)
-                {
-                    EnterEvadeMode();
-                    return;
-                }
+                EnterEvadeMode();
+                return;
+            }
 
-                ShadeGUID = instance->GetData64(DATA_SHADEOFAKAMA);
-                if (!ShadeGUID)
-                {
-                    EnterEvadeMode();
-                    return;
-                }
+            ShadeGUID = instance->GetData64(DATA_SHADEOFAKAMA);
+            if (!ShadeGUID)
+            {
+                EnterEvadeMode();
+                return;
+            }
 
-                Creature *shade = me->GetCreature(*me, ShadeGUID);
-                if (shade)
-                {
-                    DoCast(shade, SPELL_AKAMA_SOUL_CHANNEL);
-                    me->SetSelection(ShadeGUID);
-                }
-            }
-            break;
-            case 1:
+            Creature *shade = me->GetCreature(*me, ShadeGUID);
+            if (shade)
             {
-                m_talkTimer  = 500;
-                m_talk = 1;
+                DoCast(shade, SPELL_AKAMA_SOUL_CHANNEL);
+                me->SetSelection(ShadeGUID);
+                isCasting = true;
             }
-            break;
-            case 2:
-            {
-                // upstairs
-                m_talkTimer = 500;
-                m_talk = 2;
-            }
-            break;
-            case 3:
-            {
-                m_talkTimer = 500;
-                m_talk = 3;
-            }
-            break;
-            case 4:
-            {
-                m_talkTimer = 500;
-                m_talk = 4;
-            }
-            break;
         }
+        break;
+        case 1:
+        {
+            m_talkTimer = 500;
+            m_talk = 1;
+        }
+        break;
+        case 2:
+        {
+            // upstairs
+            m_talkTimer = 500;
+            m_talk = 2;
+        }
+        break;
+        case 3:
+        {
+            m_talkTimer = 500;
+            m_talk = 3;
+        }
+        break;
+        case 4:
+        {
+            m_talkTimer = 500;
+            m_talk = 4;
+        }
+        break;
+        }
+    }
+
+    void DamageTaken(Unit* who, uint32& damage)
+    {
+            ClearCastQueue();
+            isCasting = false;
     }
 
     void JustDied(Unit* killer)
@@ -1322,49 +853,49 @@ struct npc_akamaAI : public Scripted_NoMovementAI
                 m_talkTimer = 0;
                 switch (m_talk)
                 {
-                    case 0:
-                        me->GetMotionMaster()->MovePoint(1, moveTo[1][0], moveTo[1][1], moveTo[1][2]);
+                case 0:
+                    me->GetMotionMaster()->MovePoint(1, moveTo[1][0], moveTo[1][1], moveTo[1][2]);
                     break;
-                    case 1:
-                        me->GetMotionMaster()->MovePoint(2, moveTo[0][0], moveTo[0][1], moveTo[0][2]);
+                case 1:
+                    me->GetMotionMaster()->MovePoint(2, moveTo[0][0], moveTo[0][1], moveTo[0][2]);
                     break;
-                    case 2:
-                        me->GetMotionMaster()->MovePoint(3, moveTo[0][0]-5.0f, moveTo[0][1], moveTo[0][2]);
+                case 2:
+                    me->GetMotionMaster()->MovePoint(3, moveTo[0][0] - 5.0f, moveTo[0][1], moveTo[0][2]);
                     break;
-                    case 3:
-                        me->GetMotionMaster()->MovePoint(4, moveTo[0][0]-4.0f, moveTo[0][1], moveTo[0][2]);
+                case 3:
+                    me->GetMotionMaster()->MovePoint(4, moveTo[0][0] - 4.0f, moveTo[0][1], moveTo[0][2]);
                     break;
-                    case 4:
-                    {
-                        me->HandleEmoteCommand(EMOTE_ONESHOT_ROAR);
-                        ++m_talk;
-                        m_talkTimer = 1500;
-                    }
-                    break;
-                    case 5:
-                    {
-                        DoScriptText(SAY_FREE, me);
-                        DoCast(me, 40927, true);
-                        if (Creature *shade = me->GetCreature(*me, ShadeGUID))
-                            DoCast(shade, SPELL_AKAMA_SOUL_RETRIEVE);
+                case 4:
+                {
+                    me->HandleEmoteCommand(EMOTE_ONESHOT_ROAR);
+                    ++m_talk;
+                    m_talkTimer = 1500;
+                }
+                break;
+                case 5:
+                {
+                    DoScriptText(SAY_FREE, me);
+                    DoCast(me, 40927, true);
+                    if (Creature *shade = me->GetCreature(*me, ShadeGUID))
+                        DoCast(shade, SPELL_AKAMA_SOUL_RETRIEVE);
 
-                        ++m_talk;
-                        m_talkTimer = 60000;
-                        for (int i = 0; i < MAX_BROKEN; ++i)
+                    ++m_talk;
+                    m_talkTimer = 60000;
+                    for (int i = 0; i < MAX_BROKEN; ++i)
+                    {
+                        Creature *broken = me->SummonCreature(CREATURE_BROKEN, BrokenPositions[i][0], BrokenPositions[i][1], AKAMA_Z, 0.0f, TEMPSUMMON_TIMED_DESPAWN, 45000);
+                        if (broken)
                         {
-                            Creature *broken = me->SummonCreature(CREATURE_BROKEN, BrokenPositions[i][0], BrokenPositions[i][1], AKAMA_Z, 0.0f, TEMPSUMMON_TIMED_DESPAWN, 45000);
-                            if (broken)
-                            {
-                                m_summons.Summon(broken);
-                                broken->SetWalk(true);
-                                broken->GetMotionMaster()->MovePoint(0, BrokenMoveTo[i][0], BrokenMoveTo[i][1], SPAWN_Z);
-                                broken->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_STATE_KNEEL);
-                            }
+                            m_summons.Summon(broken);
+                            broken->SetWalk(true);
+                            broken->GetMotionMaster()->MovePoint(0, BrokenMoveTo[i][0], BrokenMoveTo[i][1], SPAWN_Z);
+                            broken->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_STATE_KNEEL);
                         }
                     }
-                    break;
-                    default:
-                        me->AI()->EnterEvadeMode();
+                }
+                break;
+                default:
+                    me->AI()->EnterEvadeMode();
                     break;
                 }
             }
@@ -1372,10 +903,16 @@ struct npc_akamaAI : public Scripted_NoMovementAI
                 m_talkTimer -= diff;
         }
 
+        if (isCasting)
+        {
+            me->SetSelection(ShadeGUID);
+            return;
+        }
+
         if (instance->GetData(EVENT_SHADEOFAKAMA) != IN_PROGRESS)
             return;
 
-        if (!m_yell && (me->GetHealth()*100 / me->GetMaxHealth()) < 15)
+        if (!m_yell && (me->GetHealth() * 100 / me->GetMaxHealth()) < 15)
         {
             DoScriptText(SAY_LOW_HEALTH, me);
             m_yell = true;
@@ -1390,15 +927,15 @@ struct npc_akamaAI : public Scripted_NoMovementAI
         if (m_destructiveTimer < diff)
         {
             AddSpellToCast(me->getVictim(), SPELL_DESTRUCTIVE_POISON, true);
-            m_destructiveTimer = 5000;
+            m_destructiveTimer = urand(3000, 7000);
         }
         else
             m_destructiveTimer -= diff;
 
         if (m_lightningBoltTimer < diff)
         {
-            AddSpellToCast(me->getVictim(), SPELL_CHAIN_LIGHTNING);
-            m_lightningBoltTimer = 8000;
+            AddSpellToCast(me->getVictim(), SPELL_CHAIN_LIGHTNING, true, true);
+            m_lightningBoltTimer = urand(6000, 8000);
         }
         else
             m_lightningBoltTimer -= diff;
@@ -1416,50 +953,453 @@ void boss_shade_of_akamaAI::JustDied(Unit *)
         ((npc_akamaAI *)akama->AI())->ShadeKilled();
 
     if (instance)
-        instance->SetData(EVENT_SHADEOFAKAMA, DONE);   //na wszelki wypadek
+        instance->SetData(EVENT_SHADEOFAKAMA, DONE);
 }
+
+enum defenderSpells
+{
+    SPELL_DEBILITATIG_STRIKE    = 41178,
+    SPELL_SHIELD_BASH           = 41180,
+    SPELL_HEROIC_STRIKE         = 41975
+};
+
+struct mob_ashtongue_defenderAI : public ScriptedAI
+{
+    mob_ashtongue_defenderAI(Creature* c) : ScriptedAI(c)
+    {
+        instance = (ScriptedInstance*)c->GetInstanceData();
+    }
+
+    ScriptedInstance* instance;
+
+    uint32 m_debilStrikeTimer;
+    uint32 m_shieldBashTimer;
+    uint32 m_checkTimer;
+
+    void Reset()
+    {
+        ClearCastQueue();
+
+        m_debilStrikeTimer = urand(5000, 10000);
+        m_shieldBashTimer = urand(8000, 15000);
+        m_checkTimer = 10000;
+    }
+
+    void EnterCombat(Unit *pWho)
+    {
+        DoZoneInCombat();
+    }
+
+    void DoMeleeAttackIfReady()
+    {
+        if (me->hasUnitState(UNIT_STAT_CASTING))
+            return;
+
+        //Make sure our attack is ready and we aren't currently casting before checking distance
+        if (me->isAttackReady())
+        {
+            //If we are within range melee the target
+            if (me->IsWithinMeleeRange(me->getVictim()))
+            {
+                me->AttackerStateUpdate(me->getVictim());
+                me->resetAttackTimer();
+
+                if (IS_CREATURE_GUID(me->getVictimGUID()))
+                    DoCast(me->getVictim(), SPELL_HEROIC_STRIKE, true);
+            }
+        }
+    }
+
+    void UpdateAI(const uint32 diff)
+    {
+        if (!UpdateVictim())
+            return;
+
+        if (m_debilStrikeTimer < diff)
+        {
+            AddSpellToCast(me->getVictim(), SPELL_DEBILITATIG_STRIKE);
+            m_debilStrikeTimer = urand(6000, 11000);
+        }
+        else
+            m_debilStrikeTimer -= diff;
+
+        if (m_shieldBashTimer < diff)
+        {
+            if (me->getVictim() && me->getVictim()->hasUnitState(UNIT_STAT_CASTING))
+            {
+                AddSpellToCast(me->getVictim(), SPELL_SHIELD_BASH);
+                m_shieldBashTimer = urand(16000, 21000);
+            }
+        }
+        else
+            m_shieldBashTimer -= diff;
+
+        if (m_checkTimer < diff)
+        {
+            if (!instance)
+                return;
+
+            if (Creature *pAkama = me->GetCreature(*me, instance->GetData64(DATA_SHADEOFAKAMA)))
+            {
+                if (!pAkama->isAlive())
+                {
+                    me->Kill(me, false);
+                    me->RemoveCorpse();
+                }
+            }
+            m_checkTimer = 5000;
+        }
+        else
+            m_checkTimer -= diff;
+
+        CastNextSpellIfAnyAndReady();
+        DoMeleeAttackIfReady();
+    }
+};
+
+enum spiritbinderSpells
+{
+    SPELL_CHAIN_HEAL    = 42027,
+    SPELL_SSPIRIT_HEAL  = 42317,
+    SPELL_SPIRIT_MEND   = 42025,
+    SPELL_SPIRIT_MEND2  = 42318
+};
+
+struct mob_ashtongue_spiritbinderAI : public ScriptedAI
+{
+    mob_ashtongue_spiritbinderAI(Creature* c) : ScriptedAI(c)
+    {
+        instance = (ScriptedInstance*)c->GetInstanceData();
+    }
+
+    ScriptedInstance* instance;
+
+    uint32 m_chainHealTimer;
+    uint32 m_spiritHealTimer;
+    uint32 m_spiritMendTimer;
+    uint32 m_checkTimer;
+
+    void Reset()
+    {
+        ClearCastQueue();
+
+        m_chainHealTimer = urand(10000, 15000);
+        m_spiritHealTimer = urand(7000, 10000);
+        m_spiritMendTimer = urand(14000, 20000);
+        m_checkTimer = 5000;
+    }
+
+    void MoveInLineOfSight(Unit *pWho)
+    {
+        if (me->getVictim())
+            return;
+
+        if (pWho->GetTypeId() == TYPEID_PLAYER)
+        {
+            // drop PointMovement since it has higher priority than chase :P
+            me->GetMotionMaster()->MoveIdle();
+            AttackStart(pWho);
+        }
+    }
+
+    void MovementInform(uint32 type, uint32 id)
+    {
+        if (type != POINT_MOTION_TYPE)
+            return;
+
+        if (Creature *pAkama = me->GetCreature(*me, instance->GetData64(DATA_AKAMA_SHADE)))
+            AttackStart(pAkama);
+    }
+
+    void UpdateAI(const uint32 diff)
+    {
+        if (!UpdateVictim())
+            return;
+
+        if (m_chainHealTimer < diff)
+        {
+            AddSpellToCast(me, SPELL_CHAIN_HEAL, false);
+            m_chainHealTimer = urand(18000, 24000);
+        }
+        else
+            m_chainHealTimer -= diff;
+
+        if (m_spiritMendTimer < diff)
+        {
+            AddSpellToCast(me, SPELL_SPIRIT_MEND2, false);
+            m_spiritMendTimer = urand(12000, 16000);
+        }
+        else
+            m_spiritMendTimer -= diff;
+
+        if (m_spiritHealTimer < diff)
+        {
+            AddSpellToCast(NULL, SPELL_SSPIRIT_HEAL, false, true);
+            m_spiritHealTimer = urand(21000, 30000);
+        }
+        else
+            m_spiritHealTimer -= diff;
+
+        if (m_checkTimer < diff)
+        {
+            if (!instance)
+                return;
+
+            if (Creature *pAkama = me->GetCreature(*me, instance->GetData64(DATA_SHADEOFAKAMA)))
+            {
+                if (!pAkama->isAlive())
+                {
+                    me->Kill(me, false);
+                    me->RemoveCorpse();
+                }
+            }
+            m_checkTimer = 5000;
+        }
+        else
+            m_checkTimer -= diff;
+
+        CastNextSpellIfAnyAndReady();
+        DoMeleeAttackIfReady();
+    }
+};
+
+enum elementalistSpells
+{
+    SPELL_RAIN_OF_FIRE      = 42023,
+    SPELL_LIGHTNING_BOLT    = 42024
+};
+
+struct mob_ashtongue_elementalistAI : public ScriptedAI
+{
+    mob_ashtongue_elementalistAI(Creature* c) : ScriptedAI(c)
+    {
+        instance = (ScriptedInstance*)c->GetInstanceData();
+    }
+
+    ScriptedInstance* instance;
+
+    uint32 m_rainofFireTimer;
+    uint32 m_lightningBoltTimer;
+    uint32 m_checkTimer;
+
+    void Reset()
+    {
+        ClearCastQueue();
+
+        m_rainofFireTimer = urand(5000, 18000);
+        m_lightningBoltTimer = urand(2000, 4000);
+        m_checkTimer = 5000;
+    }
+
+    void MoveInLineOfSight(Unit *pWho)
+    {
+        if (me->getVictim())
+            return;
+
+        if (pWho->GetTypeId() == TYPEID_PLAYER)
+        {
+            // drop PointMovement since it has higher priority than chase :P
+            me->GetMotionMaster()->MoveIdle();
+            AttackStart(pWho);
+        }
+    }
+
+    void MovementInform(uint32 type, uint32 id)
+    {
+        if (type != POINT_MOTION_TYPE)
+            return;
+
+        if (Creature *pAkama = me->GetCreature(*me, instance->GetData64(DATA_AKAMA_SHADE)))
+            AttackStart(pAkama);
+    }
+
+    void UpdateAI(const uint32 diff)
+    {
+        if (!UpdateVictim())
+            return;
+
+        if (m_lightningBoltTimer < diff)
+        {
+            AddSpellToCast(me->getVictim(), SPELL_LIGHTNING_BOLT, false);
+            m_lightningBoltTimer = urand(3400, 4800);
+        }
+        else
+            m_lightningBoltTimer -= diff;
+
+        if (m_rainofFireTimer < diff)
+        {
+            DoZoneInCombat();
+            if (Unit *pEnemy = SelectUnit(SELECT_TARGET_RANDOM, 0, 40.0f, true))
+            {
+                AddSpellToCast(pEnemy, SPELL_RAIN_OF_FIRE, false);
+                m_rainofFireTimer = urand(16000, 21000);
+            }
+        }
+        else
+            m_rainofFireTimer -= diff;
+
+        if (m_checkTimer < diff)
+        {
+            if (!instance)
+                return;
+
+            if (Creature *pAkama = me->GetCreature(*me, instance->GetData64(DATA_SHADEOFAKAMA)))
+            {
+                if (!pAkama->isAlive())
+                {
+                    me->Kill(me, false);
+                    me->RemoveCorpse();
+                }
+            }
+            m_checkTimer = 5000;
+        }
+        else
+            m_checkTimer -= diff;
+
+        CastNextSpellIfAnyAndReady();
+        DoMeleeAttackIfReady();
+    }
+};
+
+enum rogueSpells
+{
+    SPELL_DEBILITATING_POISON   = 41978,
+    SPELL_EVISCERATE            = 41177,
+    SPELL_DUAL_WIELD            = 42459
+};
+
+struct mob_ashtongue_rogueAI : public ScriptedAI
+{
+    mob_ashtongue_rogueAI(Creature* c) : ScriptedAI(c)
+    {
+        instance = (ScriptedInstance*)c->GetInstanceData();
+    }
+
+    ScriptedInstance* instance;
+
+    uint32 m_debilPoisonTimer;
+    uint32 m_eviscerateTimer;
+    uint32 m_checkTimer;
+    uint32 health;
+
+    void Reset()
+    {
+        ClearCastQueue();
+
+        m_debilPoisonTimer = urand(5000, 10000);
+        m_eviscerateTimer = urand(11000, 15000);
+        m_checkTimer = 5000;
+
+        ForceSpellCast(me, SPELL_DUAL_WIELD, INTERRUPT_AND_CAST);
+    }
+
+    void MoveInLineOfSight(Unit *pWho)
+    {
+        if (me->getVictim())
+            return;
+
+        if (pWho->GetTypeId() == TYPEID_PLAYER)
+        {
+            // drop PointMovement since it has higher priority than chase :P
+            me->GetMotionMaster()->MoveIdle();
+            AttackStart(pWho);
+        }
+    }
+
+    void MovementInform(uint32 type, uint32 id)
+    {
+        if (type != POINT_MOTION_TYPE)
+            return;
+
+        if (Creature *pAkama = me->GetCreature(*me, instance->GetData64(DATA_AKAMA_SHADE)))
+            AttackStart(pAkama);
+    }
+
+    void UpdateAI(const uint32 diff)
+    {
+        if (!UpdateVictim())
+            return;
+
+        if (m_debilPoisonTimer < diff)
+        {
+            AddSpellToCast(me->getVictim(), SPELL_DEBILITATING_POISON, false);
+            m_debilPoisonTimer = urand(11000, 14000);
+        }
+        else
+            m_debilPoisonTimer -= diff;
+
+        if (m_eviscerateTimer < diff)
+        {
+            AddSpellToCast(me->getVictim(), SPELL_EVISCERATE, false);
+            m_eviscerateTimer = urand(11000, 15000);
+        }
+        else
+            m_eviscerateTimer -= diff;
+
+        if (m_checkTimer < diff)
+        {
+            if (!instance)
+                return;
+
+            if (Creature *pAkama = me->GetCreature(*me, instance->GetData64(DATA_SHADEOFAKAMA)))
+            {
+                if (!pAkama->isAlive())
+                {
+                    me->Kill(me, false);
+                    me->RemoveCorpse();
+                }
+            }
+            m_checkTimer = 5000;
+        }
+        else
+            m_checkTimer -= diff;
+
+        CastNextSpellIfAnyAndReady();
+        DoMeleeAttackIfReady();
+    }
+};
 
 CreatureAI* GetAI_boss_shade_of_akama(Creature *_Creature)
 {
-    return new boss_shade_of_akamaAI (_Creature);
+    return new boss_shade_of_akamaAI(_Creature);
 }
 
 CreatureAI* GetAI_mob_ashtongue_channeler(Creature *_Creature)
 {
-    return new mob_ashtongue_channelerAI (_Creature);
+    return new mob_ashtongue_channelerAI(_Creature);
 }
 
 CreatureAI* GetAI_mob_ashtongue_sorcerer(Creature *_Creature)
 {
-    return new mob_ashtongue_sorcererAI (_Creature);
+    return new mob_ashtongue_sorcererAI(_Creature);
 }
 
 CreatureAI* GetAI_mob_ashtongue_defender(Creature *_Creature)
 {
-    return new mob_ashtongue_defenderAI (_Creature);
+    return new mob_ashtongue_defenderAI(_Creature);
 }
 
 CreatureAI* GetAI_mob_ashtongue_spiritbinder(Creature *_Creature)
 {
-    return new mob_ashtongue_spiritbinderAI (_Creature);
+    return new mob_ashtongue_spiritbinderAI(_Creature);
 }
 
 CreatureAI* GetAI_mob_ashtongue_elementalist(Creature *_Creature)
 {
-    return new mob_ashtongue_elementalistAI (_Creature);
+    return new mob_ashtongue_elementalistAI(_Creature);
 }
 
 CreatureAI* GetAI_mob_ashtongue_rogue(Creature *_Creature)
 {
-    return new mob_ashtongue_rogueAI (_Creature);
+    return new mob_ashtongue_rogueAI(_Creature);
 }
 
 CreatureAI* GetAI_npc_akama_shade(Creature *_Creature)
 {
-    return new npc_akamaAI (_Creature);
+    return new npc_akamaAI(_Creature);
 }
 
-bool GossipSelect_npc_akama(Player *player, Creature *_Creature, uint32 sender, uint32 action )
+bool GossipSelect_npc_akama(Player *player, Creature *_Creature, uint32 sender, uint32 action)
 {
     if (ScriptedInstance *instance = (ScriptedInstance *)_Creature->GetInstanceData())
     {
@@ -1486,7 +1426,7 @@ bool GossipHello_npc_akama(Player *player, Creature *_Creature)
         {
             if (player->isAlive())
             {
-                player->ADD_GOSSIP_ITEM( 0, GOSSIP_ITEM, GOSSIP_SENDER_MAIN, GOSSIP_ACTION_INFO_DEF + 1);
+                player->ADD_GOSSIP_ITEM(0, GOSSIP_ITEM, GOSSIP_SENDER_MAIN, GOSSIP_ACTION_INFO_DEF + 1);
                 player->SEND_GOSSIP_MENU(907, _Creature->GetGUID());
             }
         }
@@ -1508,13 +1448,20 @@ void AddSC_boss_shade_of_akama()
     newscript->RegisterSelf();
 
     newscript = new Script;
-    newscript->Name = "mob_ashtongue_defender";
-    newscript->GetAI = &GetAI_mob_ashtongue_defender;
+    newscript->Name = "mob_ashtongue_sorcerer";
+    newscript->GetAI = &GetAI_mob_ashtongue_sorcerer;
     newscript->RegisterSelf();
 
     newscript = new Script;
-    newscript->Name = "mob_ashtongue_sorcerer";
-    newscript->GetAI = &GetAI_mob_ashtongue_sorcerer;
+    newscript->Name = "npc_akama_shade";
+    newscript->GetAI = &GetAI_npc_akama_shade;
+    newscript->pGossipHello = &GossipHello_npc_akama;
+    newscript->pGossipSelect = &GossipSelect_npc_akama;
+    newscript->RegisterSelf();
+
+    newscript = new Script;
+    newscript->Name = "mob_ashtongue_defender";
+    newscript->GetAI = &GetAI_mob_ashtongue_defender;
     newscript->RegisterSelf();
 
     newscript = new Script;
@@ -1530,12 +1477,5 @@ void AddSC_boss_shade_of_akama()
     newscript = new Script;
     newscript->Name = "mob_ashtongue_rogue";
     newscript->GetAI = &GetAI_mob_ashtongue_rogue;
-    newscript->RegisterSelf();
-
-    newscript = new Script;
-    newscript->Name = "npc_akama_shade";
-    newscript->GetAI = &GetAI_npc_akama_shade;
-    newscript->pGossipHello = &GossipHello_npc_akama;
-    newscript->pGossipSelect = &GossipSelect_npc_akama;
     newscript->RegisterSelf();
 }

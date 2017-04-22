@@ -93,9 +93,7 @@ void SpellCastTargets::setUnitTarget(Unit *target)
         return;
 
     m_unitTarget = target;
-    
-    if (target && target->GetGUID())
-        m_unitTargetGUID = target->GetGUID();
+    m_unitTargetGUID = target->GetObjectGuid();
 
     m_targetMask |= TARGET_FLAG_UNIT;
 }
@@ -1166,6 +1164,23 @@ void Spell::DoSpellHitOnUnit(Unit *unit, const uint32 effectMask)
                 m_damage = 0;
                 return;
             }
+
+            // Make unit stand on spell hit
+            if (!unit->IsStandState() && !unit->hasUnitState(UNIT_STAT_STUNNED))
+                    unit->SetStandState(UNIT_STAND_STATE_STAND);
+
+            // Fearie fire break stealth
+            if(GetSpellInfo()->Id == 770 || GetSpellInfo()->Id == 778 || GetSpellInfo()->Id == 9749 || GetSpellInfo()->Id == 9907) {
+                unit->RemoveAuraTypeByCaster(SPELL_AURA_MOD_STEALTH, unit->GetGUID());
+            }
+
+            // DOT break stealth on application
+            for (int j=0; j<3; j++) {
+                if (GetSpellInfo()->EffectApplyAuraName[j] == SPELL_AURA_PERIODIC_DAMAGE) {
+                    unit->RemoveAuraTypeByCaster(SPELL_AURA_MOD_STEALTH, unit->GetGUID());
+                }
+            }
+
             unit->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_HITBYSPELL);
             if (GetSpellInfo()->AttributesCu & SPELL_ATTR_CU_AURA_CC)
                 unit->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_CC);
@@ -1751,11 +1766,14 @@ void Spell::SetTargetMap(uint32 i, uint32 cur)
                     pushType = PUSH_CHAIN;
                     break;
                 case TARGET_UNIT_TARGET_ALLY:
+                    AddUnitTarget(target, i);
+                    break;
                 case TARGET_UNIT_TARGET_RAID:
                 case TARGET_UNIT_TARGET_ANY: // SelectMagnetTarget()?
                 case TARGET_UNIT_TARGET_PARTY:
                 case TARGET_UNIT_MINIPET:
-                    AddUnitTarget(target, i);
+                    if (IsValidSingleTargetSpell(target))
+                        AddUnitTarget(target, i);
                     break;
                 case TARGET_UNIT_PARTY_TARGET:
                 case TARGET_UNIT_CLASS_TARGET:
@@ -2236,6 +2254,7 @@ void Spell::SetTargetMap(uint32 i, uint32 cur)
                     break;
                 case 41376:     // Spite
                 case 46771:     // Flame Sear
+                case 43550:     // MC Hexlord
                     unitList.remove_if(Looking4group::ObjectGUIDCheck(m_caster->getVictimGUID()));
                     break;
                 case 45248:     // Shadow Blades
@@ -2300,10 +2319,10 @@ void Spell::prepare(SpellCastTargets * targets, Aura* triggeredByAura)
             return;
         }
         
-        //Hack for Hexlord Spirit bolts - don't interrupt with death coil, Maim, Intercept
+        //Hexlord Spirit bolts, Underbog Colossus Acid Geyser Spore Quake  - don't interrupt with death coil, Maim, Intercept
         if (m_targets.getUnitTarget())               //Deathcoil                                //Maim                       //Intercept
             if ((GetSpellInfo()->Effect[0] == SPELL_EFFECT_HEALTH_LEECH || GetSpellInfo()->Id == 22570 || GetSpellInfo()->Id == 25275)
-                && m_targets.getUnitTarget()->HasAura(43383))
+                && (m_targets.getUnitTarget()->HasAura(43383) || m_targets.getUnitTarget()->HasAura(38971) || m_targets.getUnitTarget()->HasAura(38976)))
             {
                 SendCastResult(SPELL_FAILED_NOT_READY);
                 finish(false);
@@ -2463,6 +2482,10 @@ void Spell::cancel()
 
 void Spell::cast(bool skipCheck)
 {
+    // send trinket message to Gladdy
+    if (m_spellInfo->Id == 42292)
+        m_caster->ToPlayer()->SendGladdyNotification();
+
     // what the fuck is done here? o.O
     SpellEntry const* spellInfo = sSpellStore.LookupEntry(GetSpellInfo()->Id);
     if (!spellInfo)
@@ -3091,10 +3114,10 @@ void Spell::finish(bool ok)
 
     if (Player* modOwner = m_caster->GetSpellModOwner())
     {
-        if (ok || m_spellState != SPELL_STATE_PREPARING || m_spellState != SPELL_STATE_DELAYED)
+        if (ok || m_spellState != SPELL_STATE_PREPARING)
             modOwner->RemoveSpellMods(this);
         else
-            modOwner->RestoreSpellMods(this);
+            modOwner->ResetSpellModsDueToCanceledSpell(this);
     }
 
     m_spellState = SPELL_STATE_FINISHED;
@@ -3184,6 +3207,16 @@ void Spell::SendCastResult(SpellCastResult result)
             // hardcode areas limitation case
             switch (GetSpellInfo()->Id)
             {
+                case 41304:                             // Blue Ogre Brew
+                case 41306:                             // Red Ogre Brew
+                case 40567:                             // Unstable Flask of the Bandit
+                case 40568:                             // Unstable Flask of the Elder
+                case 40572:                             // Unstable Flask of the Beast                
+                case 40573:                             // Unstable Flask of the Physician             
+                case 40575:                             // Unstable Flask of the Soldier
+                case 40576:                             // Unstable Flask of the Sorcerer
+                    data << uint32(3522);
+                    break;
                 case 41617:                             // Cenarion Mana Salve
                 case 41619:                             // Cenarion Healing Salve
                     data << uint32(3905);
@@ -3260,6 +3293,12 @@ void Spell::SendSpellGo()
         return;
 
     sLog.outDebug("Sending SMSG_SPELL_GO id=%u", GetSpellInfo()->Id);
+
+    // Some spell mods are used already upon cast, such as Presence of Mind, remove them here already as it may cause abuse
+    // Elemental Mastery/Inner Focus/Spell Reflect/Grounding Effect/Fel Domination/Cold Snap/Preparation must not be removed on cast
+    if (m_caster->GetTypeId() == TYPEID_PLAYER && !m_caster->HasAura(16166, 0) && !m_caster->HasAura(14751, 0)
+        && !m_caster->HasAura(23920, 0) && !m_caster->HasAura(8178, 0) && !m_caster->HasAura(18708, 0) && !(m_spellInfo->Id == 11958) && !(m_spellInfo->Id == 14185))
+        m_caster->ToPlayer()->RemoveSpellMods(this);
 
     Unit *target = m_targets.getUnitTarget() ? m_targets.getUnitTarget() : m_caster;
 
@@ -3682,7 +3721,18 @@ void Spell::TakePower()
                 }
 
         if (hit && SpellMgr::NeedsComboPoints(GetSpellInfo()))
+        {
+            // Not drop combopoints if any miss exist
+            bool needDrop = true;
+            for(std::list<TargetInfo>::iterator ihit= m_UniqueTargetInfo.begin();ihit != m_UniqueTargetInfo.end();++ihit)
+            if (ihit->missCondition != SPELL_MISS_NONE)
+            {
+                needDrop = false;
+                break;
+                    }
+            if (needDrop)
             ((Player*)m_caster)->ClearComboPoints();
+        }
     }
 
     if (!m_powerCost)
@@ -3935,8 +3985,12 @@ SpellCastResult Spell::CheckCast(bool strict)
         {
             if (GetSpellInfo()->EffectImplicitTargetA[j] == TARGET_UNIT_PET)
             {
-                target = m_caster->GetPet();
-                if (!target)
+                if (Unit* pet = m_caster->GetPet())
+                {
+                    if (!(m_spellInfo->AttributesEx2 & SPELL_ATTR_EX2_IGNORE_LOS) && !m_caster->IsWithinLOSInMap(pet))
+                        return SPELL_FAILED_LINE_OF_SIGHT;
+                }
+                else
                 {
                     if (m_triggeredByAuraSpell)              // not report pet not existence for triggered spells
                         return SPELL_FAILED_DONT_REPORT;
@@ -4039,6 +4093,10 @@ SpellCastResult Spell::CheckCast(bool strict)
         {
             return SPELL_FAILED_TARGET_AFFECTING_COMBAT;
         }
+
+        // check if target is affected by Spirit of Redemption (Aura: 27827)
+        if (target->HasAuraType(SPELL_AURA_SPIRIT_OF_REDEMPTION))
+            return SPELL_FAILED_BAD_TARGETS;
     }
     else if (!IsTriggeredSpell())
     {
@@ -4515,19 +4573,45 @@ SpellCastResult Spell::CheckCast(bool strict)
                 break;
             }
             case SPELL_EFFECT_TELEPORT_UNITS:
-                {
-                    //Do not allow use of Trinket before BG starts
-                    if (m_caster->GetTypeId()==TYPEID_PLAYER)
-                        if (GetSpellInfo()->Id == 22563 || GetSpellInfo()->Id == 22564)
-                            if (BattleGround const *bg = ((Player*)m_caster)->GetBattleGround())
-                                if (bg->GetStatus() != STATUS_IN_PROGRESS)
-                                    return SPELL_FAILED_TRY_AGAIN;
-                    break;
-                }
+            {
+                //Do not allow use of Trinket before BG starts
+                if (m_caster->GetTypeId()==TYPEID_PLAYER)
+                    if (GetSpellInfo()->Id == 22563 || GetSpellInfo()->Id == 22564)
+                        if (BattleGround const *bg = ((Player*)m_caster)->GetBattleGround())
+                            if (bg->GetStatus() != STATUS_IN_PROGRESS)
+                                return SPELL_FAILED_TRY_AGAIN;
+                break;
+            }
             case SPELL_EFFECT_STEAL_BENEFICIAL_BUFF:
             {
                 if (m_targets.getUnitTarget()==m_caster)
                     return SPELL_FAILED_BAD_TARGETS;
+                if (Unit* target = m_targets.getUnitTarget())
+                {
+                    if (target->GetTypeId() == TYPEID_PLAYER)
+                    {
+                        // Create dispel mask by dispel type
+                        bool hasOtherEffects = false;
+                        uint32 dispelMask = 0;
+
+                        for (uint8 i = 0; i < 3; ++i)
+                        {
+                            if (m_spellInfo->Effect[i] == SPELL_EFFECT_STEAL_BENEFICIAL_BUFF)
+                            {
+                                // itr through all dispel types and add them to mask
+                                dispelMask |= SpellMgr::GetDispellMask(DispelType(m_spellInfo->EffectMiscValue[i]));
+                            }
+                            else if (m_spellInfo->Effect[i] > 0)
+                                hasOtherEffects = true;
+                        }
+
+                        // check if dispel makes sense
+                        std::vector <Aura *> dispel_list;
+                        target->GetDispellableAuraList(m_caster, dispelMask, dispel_list);
+                        if (dispel_list.empty() && !hasOtherEffects)
+                            return SPELL_FAILED_NOTHING_TO_STEAL;
+                    }
+                }
                 break;
             }
             case SPELL_EFFECT_ENERGIZE:
@@ -4567,6 +4651,37 @@ SpellCastResult Spell::CheckCast(bool strict)
                         return SPELL_FAILED_NOTHING_TO_DISPEL;
                 }
                 break;
+                
+            case SPELL_EFFECT_DISPEL:
+            {
+                if (Unit* target = m_targets.getUnitTarget())
+                {
+                    if (target->GetTypeId() == TYPEID_PLAYER)
+                    {
+                        // Create dispel mask by dispel type
+                        bool hasOtherEffects = false;
+                        uint32 dispelMask = 0;
+
+                        for (uint8 i = 0; i < 3; ++i)
+                        {
+                            if (m_spellInfo->Effect[i] == SPELL_EFFECT_DISPEL)
+                            {
+                                // itr through all dispel types and add them to mask
+                                dispelMask |= SpellMgr::GetDispellMask(DispelType(m_spellInfo->EffectMiscValue[i]));
+                            }
+                            else if (m_spellInfo->Effect[i] > 0)
+                                hasOtherEffects = true;
+                        }
+
+                        // check if dispel makes sense
+                        std::vector <Aura *> dispel_list;
+                        target->GetDispellableAuraList(m_caster, dispelMask, dispel_list);
+                        if (dispel_list.empty() && !hasOtherEffects && !IsTriggeredSpell())
+                            return SPELL_FAILED_NOTHING_TO_DISPEL;
+                    }
+                }
+                break;
+            }
             }
             default:break;
         }
@@ -4942,6 +5057,9 @@ SpellCastResult Spell::CheckRange(bool strict)
     float min_range = SpellMgr::GetSpellMinRange(srange);
     uint32 range_type = SpellMgr::GetSpellRangeType(srange);
 
+    // Adding 15% Range Buffer
+    max_range *= 1.15f;
+
     if (Player* modOwner = m_caster->GetSpellModOwner())
         modOwner->ApplySpellMod(GetSpellInfo()->Id, SPELLMOD_RANGE, max_range, this);
 
@@ -4996,10 +5114,12 @@ SpellCastResult Spell::CheckRange(bool strict)
     // TODO verify that such spells really use bounding radius
     if (m_targets.m_targetMask == TARGET_FLAG_DEST_LOCATION && m_targets.m_destX != 0 && m_targets.m_destY != 0 && m_targets.m_destZ != 0)
     {
-        if(!m_caster->IsWithinDist3d(m_targets.m_destX, m_targets.m_destY, m_targets.m_destZ, max_range - m_caster->GetObjectSize()))
+        if (!m_caster->IsWithinDist3d(m_targets.m_destX, m_targets.m_destY, m_targets.m_destZ, max_range - m_caster->GetObjectSize()))
             return SPELL_FAILED_OUT_OF_RANGE;
-        if(min_range && m_caster->IsWithinDist3d(m_targets.m_destX, m_targets.m_destY, m_targets.m_destZ, min_range))
+        if (min_range && m_caster->IsWithinDist3d(m_targets.m_destX, m_targets.m_destY, m_targets.m_destZ, min_range))
             return SPELL_FAILED_TOO_CLOSE;
+        if (!m_caster->IsWithinLOS(m_targets.m_destX, m_targets.m_destY, m_targets.m_destZ))
+            return SPELL_FAILED_LINE_OF_SIGHT;
     }
 
     return SPELL_CAST_OK;

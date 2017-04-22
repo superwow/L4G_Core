@@ -282,6 +282,7 @@ struct SpellImmune
 };
 
 typedef std::list<SpellImmune> SpellImmuneList;
+typedef std::vector <Aura *> dispel_list;
 
 enum UnitModifierType
 {
@@ -396,12 +397,18 @@ enum UnitState
     UNIT_STAT_CASTING            = 0x00008000,        // unit is casting a spell with cast time
     UNIT_STAT_POSSESSED          = 0x00010000,        // unit is possessed
     UNIT_STAT_CHARGING           = 0x00020000,        // unit is charging
-    //UNIT_STAT_UNUSED           = 0x00040000,
-    //UNIT_STAT_UNUSED           = 0x00100000,
+    UNIT_STAT_JUMPING            = 0x00040000,
+    UNIT_STAT_MOVE               = 0x00100000,
     UNIT_STAT_ROTATING           = 0x00200000,        // unit is rotating
     UNIT_STAT_CASTING_NOT_MOVE   = 0x00400000,        // unit is casting a spell and can NOT move
-    UNIT_STAT_IGNORE_PATHFINDING = 0x00800000,        // unit won't generate path
+    UNIT_STAT_ROAMING_MOVE       = 0x00800000,
+    UNIT_STAT_CONFUSED_MOVE      = 0x01000000,
+    UNIT_STAT_FLEEING_MOVE       = 0x02000000,
+    UNIT_STAT_CHASE_MOVE         = 0x04000000,
+    UNIT_STAT_FOLLOW_MOVE        = 0x08000000,
+    UNIT_STAT_IGNORE_PATHFINDING = 0x10000000,        // unit won't generate path   
 
+    UNIT_STAT_MOVING            = (UNIT_STAT_ROAMING_MOVE | UNIT_STAT_CONFUSED_MOVE | UNIT_STAT_FLEEING_MOVE | UNIT_STAT_CHASE_MOVE | UNIT_STAT_FOLLOW_MOVE),
     UNIT_STAT_CAN_NOT_MOVE      = (UNIT_STAT_ROOT | UNIT_STAT_STUNNED | UNIT_STAT_DIED),
     UNIT_STAT_LOST_CONTROL      = (UNIT_STAT_CONFUSED | UNIT_STAT_STUNNED | UNIT_STAT_FLEEING | UNIT_STAT_CHARGING),
     UNIT_STAT_SIGHTLESS         = (UNIT_STAT_LOST_CONTROL),
@@ -916,8 +923,8 @@ class LOOKING4GROUP_IMPORT_EXPORT Unit : public WorldObject
         void CombatStop(bool cast = false);
         void CombatStopWithPets(bool cast = false);
         Unit* SelectNearbyTarget(float dist = NOMINAL_MELEE_RANGE, Unit* target = NULL, bool los = true) const;
-        void SendMeleeAttackStop(Unit* victim);
-        void SendMeleeAttackStart(Unit* pVictim);
+        void SendMeleeAttackStop(uint64 victimGUID);
+        void SendMeleeAttackStart(uint64 victimGUID);
 
         //Get a single creature of given entry
         Unit* FindCreature2(uint32 entry, float range, Unit* Finder);
@@ -952,6 +959,11 @@ class LOOKING4GROUP_IMPORT_EXPORT Unit : public WorldObject
 
         uint32 GetHealth()    const { return GetUInt32Value(UNIT_FIELD_HEALTH); }
         uint32 GetMaxHealth() const { return GetUInt32Value(UNIT_FIELD_MAXHEALTH); }
+        float GetHealthPct()  const { return (GetHealth()*100)/GetMaxHealth(); }
+
+
+        bool ShouldRevealHealthTo(Player* player) const;
+        void SendHealthUpdateDueToCharm(Player* charmer);
 
         bool HealthBelowPct(uint32 pct) const { return GetHealth() *100 < GetMaxHealth() *pct; }
 
@@ -1014,9 +1026,12 @@ class LOOKING4GROUP_IMPORT_EXPORT Unit : public WorldObject
         void Unmount();
 
         uint16 GetMaxSkillValueForLevel(Unit const* target = NULL) const { return (target ? getLevelForTarget(target) : getLevel()) * 5; }
-        void RemoveSpellbyDamageTaken(uint32 damage, uint32 spell);
+        
+        void RemoveSpellbyDamageTaken(AuraType auraType, uint32 damage, DamageEffectType damagetype, uint32 spellId = 0);
 
         void SendDamageLog(DamageLog *damageInfo);
+
+        bool IsElgibleForLeashing(DamageLog *damageInfo, DamageEffectType damagetype, SpellEntry const *spellProto = NULL);
 
         uint32 DealDamage(DamageLog *damageInfo, DamageEffectType damagetype = DIRECT_DAMAGE, SpellEntry const *spellProto = NULL, bool durabilityLoss = true);
 
@@ -1094,6 +1109,8 @@ class LOOKING4GROUP_IMPORT_EXPORT Unit : public WorldObject
         void SetInCombatWith(Unit* enemy);
         void ClearInCombat();
         uint32 GetCombatTimer() const { return m_CombatTimer; }
+
+        void GetDispellableAuraList(Unit* caster, uint32 dispelMask, dispel_list& dispelList, bool checkPositiveWhenFriendly = true);
 
         bool HasAuraType(AuraType auraType) const;
         uint32 GetAurasAmountByType(AuraType auraType) const
@@ -1297,7 +1314,7 @@ class LOOKING4GROUP_IMPORT_EXPORT Unit : public WorldObject
         float GetCreateStat(Stats stat) const { return m_createStats[stat]; }
 
         void SetCurrentCastedSpell(Spell * pSpell);
-        virtual void ProhibitSpellSchool(SpellSchoolMask /*idSchoolMask*/, uint32 /*unTimeMs*/) { }
+        virtual void LockSpellSchool(SpellSchoolMask /*idSchoolMask*/, uint32 /*unTimeMs*/) { }
 
         void InterruptSpell(uint32 spellType, bool withDelayed = true, bool withInstant = true);
         void FinishSpell(CurrentSpellTypes spellType, bool ok = true);
@@ -1616,6 +1633,9 @@ class LOOKING4GROUP_IMPORT_EXPORT Unit : public WorldObject
 
         bool IsAIEnabled, NeedChangeAI;
 
+        uint32 GetDamageTakenWithActiveAuraType(AuraType auraType) const { return m_damageTakenCounter[auraType]; }
+        void SetDamageTakenWithActiveAuraType(AuraType auraType, uint32 damageAmount) { m_damageTakenCounter[auraType] = damageAmount; }
+
         float GetDeterminativeSize() const;
 
         Player* GetGMToSendCombatStats() const { return m_GMToSendCombatStats ? GetPlayer(m_GMToSendCombatStats) : NULL; }
@@ -1703,6 +1723,8 @@ class LOOKING4GROUP_IMPORT_EXPORT Unit : public WorldObject
 
         uint32 m_CombatTimer;
         uint32 m_lastManaUse;                               // msecs
+
+        uint32 m_damageTakenCounter[TOTAL_AURAS];
 
         UnitVisibility m_Visibility;
 

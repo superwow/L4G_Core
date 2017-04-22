@@ -151,6 +151,9 @@ struct SpellCooldown
 
 typedef std::map<uint32, SpellCooldown> SpellCooldowns;
 
+#define MAX_INSTANCES_PER_HOUR 5
+typedef UNORDERED_MAP<uint32 /*instanceId*/, time_t/*releaseTime*/> InstanceTimeMap;
+
 enum TrainerSpellState
 {
     TRAINER_SPELL_GREEN = 0,
@@ -837,6 +840,7 @@ enum PlayerLoginQueryIndex
     PLAYER_LOGIN_QUERY_LOADMAILS                = 18,
     PLAYER_LOGIN_QUERY_LOADMAILEDITEMS          = 19,
     PLAYER_LOGIN_QUERY_LOAD_MONTHLY_QUEST_STATUS= 20,
+    PLAYER_LOGIN_QUERY_LOADINSTANCELOCKTIMES    = 21,
 
     MAX_PLAYER_LOGIN_QUERY
 };
@@ -1006,6 +1010,9 @@ class LOOKING4GROUP_EXPORT Player : public Unit
         void SendInitialPacketsAfterAddToMap();
         void SendTransferAborted(uint32 mapid, uint16 reason);
         void SendInstanceResetWarning(uint32 mapid, uint32 time);
+
+        // Server First Announcement PvE
+        void CheckAndAnnounceServerFirst(Creature* creature);
 
         GameObject* GetGameObjectIfCanInteractWith(uint64 guid, GameobjectTypes type = GAMEOBJECT_TYPE_GUILD_BANK) const;
         Creature* GetNPCIfCanInteractWith(uint64 guid, uint32 npcflagmask);
@@ -1220,7 +1227,7 @@ class LOOKING4GROUP_EXPORT Player : public Unit
         void ApplyEnchantment(Item *item,EnchantmentSlot slot,bool apply, bool apply_dur = true, bool ignore_condition = false);
         void ApplyEnchantment(Item *item,bool apply);
         void SendEnchantmentDurations();
-        void EnchantItem(uint32 spellid, uint8 slot); //Neue enchant funktion für den NPC :>
+        void EnchantItem(uint32 spellid, uint8 slot); //Neue enchant funktion fï¿½r den NPC :>
         void AddItemDurations(Item *item);
         void RemoveItemDurations(Item *item);
         void SendItemDurations();
@@ -1527,6 +1534,7 @@ class LOOKING4GROUP_EXPORT Player : public Unit
         template <class T> T ApplySpellMod(uint32 spellId, SpellModOp op, T &basevalue, Spell const* spell = NULL);
         void RemoveSpellMods(Spell const* spell);
         void RestoreSpellMods(Spell const* spell);
+        void ResetSpellModsDueToCanceledSpell(Spell const* spell);
 
         CooldownMgr& GetCooldownMgr() { return m_CooldownMgr; }
 
@@ -1547,7 +1555,7 @@ class LOOKING4GROUP_EXPORT Player : public Unit
         }
         void AddSpellCooldown(uint32 spell_id, uint32 itemid, time_t end_time);
         void SendCooldownEvent(SpellEntry const *spellInfo);
-        void ProhibitSpellSchool(SpellSchoolMask idSchoolMask, uint32 unTimeMs);
+        void LockSpellSchool(SpellSchoolMask idSchoolMask, uint32 unTimeMs) override;
         void RemoveSpellCooldown(uint32 spell_id, bool update = false);
         void RemoveArenaSpellCooldowns();
         void RemoveAllSpellCooldown();
@@ -1800,6 +1808,13 @@ class LOOKING4GROUP_EXPORT Player : public Unit
         void learnSkillRewardedSpells(uint32 id);
         void learnSkillRewardedSpells();
 
+        WorldLocation& GetTeleportDest() { return m_teleport_dest; }
+        bool IsBeingTeleported() const { return mSemaphoreTeleport_Near || mSemaphoreTeleport_Far; }
+        bool IsBeingTeleportedNear() const { return mSemaphoreTeleport_Near; }
+        bool IsBeingTeleportedFar() const { return mSemaphoreTeleport_Far; }
+        void SetSemaphoreTeleportNear(bool semphsetting) { mSemaphoreTeleport_Near = semphsetting; }
+        void SetSemaphoreTeleportFar(bool semphsetting) { mSemaphoreTeleport_Far = semphsetting; }
+
         void CheckAreaExploreAndOutdoor(void);
 
         static uint32 TeamForRace(uint8 race);
@@ -1904,14 +1919,26 @@ class LOOKING4GROUP_EXPORT Player : public Unit
         void SendNotifyLootMoneyRemoved();
 
         uint8 GetValidForPush();
-	 void PushSixty();
-     void Push();
-	 void EquipForPush(uint16 items[]);
-     void EquipForPushSixty(uint16 items[]);
-	 void FinishPush();
-     void FinishPushSixty();
-	 void PvpPush(uint16 items[]); //Funktionsdeklaration für S0,5
-	 void AddItem(uint32 itemID, uint32 Count);
+        bool GetValidForPushSeventy();
+        void PushSixty();
+        void PushSeventy();
+        void PushFaction(uint16 factionId, uint32 repValue);
+        void FinishTransferQuests();
+        void Push();
+        void EquipForPush(uint16 items[]);
+        void EquipForPushSeventy(uint16 items[]);
+        void EquipForPushSixty(uint16 items[]);
+        void FinishPush();
+        void FinishPushTransfer();
+        void FinishPushSixty();
+        void PvpPush(uint16 items[]);
+        void AddItem(uint32 itemID, uint32 Count);
+
+        /* Addon Helper functions */
+        void SendAddonMessage(std::string& text, char* prefix);
+        WorldPacket CreateAddonMessage(std::string& text, char* prefix);
+        WorldPacket BuildGladdyUpdate();
+        void SendGladdyNotification();
 
         /*********************************************************/
         /***               BATTLEGROUND SYSTEM                 ***/
@@ -2073,7 +2100,16 @@ class LOOKING4GROUP_EXPORT Player : public Unit
         /***               FLOOD FILTER SYSTEM                 ***/
         /*********************************************************/
 
-        void UpdateSpeakTime();
+        std::vector<std::string> MessageCache;        // The message cache for the messages will be cleared every x seconds
+        uint32 m_repeatIT;                            // Repeating messages in specific time. When this exceeds CONFIG_CHATFLOOD_REPEAT_MESSAGES the player gets muted (from all channels)
+        uint32 m_repeatTO;                            // The time until the player is allowed to use the same phrase again in the specific channel. (Timeout)
+        uint32 m_speakTimer;                          // The time since we last spoke
+        uint32 m_speakCount;                          // The total messages
+
+        bool DoSpamCheck(std::string message);
+        bool SpamCheckForType(uint32 Type, uint32 Lang);
+
+        void UpdateSpeakTime(bool Emote = false);
         bool CanSpeak() const;
         void ChangeSpeakTime(int utime);
 
@@ -2178,6 +2214,10 @@ class LOOKING4GROUP_EXPORT Player : public Unit
         void SetTemporaryUnsummonedPetNumber(uint32 petnumber) { m_temporaryUnsummonedPetNumber = petnumber; }
         uint32 GetOldPetSpell() const { return m_oldpetspell; }
         void SetOldPetSpell(uint32 petspell) { m_oldpetspell = petspell; }
+        void UnsummonPetTemporaryIfAny();
+        void UnsummonPetIfAny();
+        void ResummonPetTemporaryUnSummonedIfAny();
+        bool IsPetNeedBeTemporaryUnsummoned() const;
 
         void SendCinematicStart(uint32 CinematicSequenceId);
 
@@ -2205,6 +2245,19 @@ class LOOKING4GROUP_EXPORT Player : public Unit
         void SendSavedInstances();
         static void ConvertInstancesToGroup(Player *player, Group *group = NULL, uint64 player_guid = 0);
         bool Satisfy(AccessRequirement const*, uint32 target_map, bool report = false);
+
+        bool CheckInstanceCount(uint32 instanceId) const
+        {
+            if (_instanceResetTimes.size() < MAX_INSTANCES_PER_HOUR)
+                return true;
+            return _instanceResetTimes.find(instanceId) != _instanceResetTimes.end();
+        }
+
+        void AddInstanceEnterTime(uint32 instanceId, time_t enterTime)
+        {
+            if (_instanceResetTimes.find(instanceId) == _instanceResetTimes.end())
+                _instanceResetTimes.insert(InstanceTimeMap::value_type(instanceId, enterTime + HOUR));
+        }
 
         // last used pet number (for BG's)
         uint32 GetLastPetNumber() const { return m_lastpetnumber; }
@@ -2244,8 +2297,6 @@ class LOOKING4GROUP_EXPORT Player : public Unit
         MapReference &GetMapRef() { return m_mapRef; }
 
         bool isAllowedToLoot(Creature* creature);
-
-        WorldLocation& GetTeleportDest() { return m_teleport_dest; }
 
         DeclinedName const* GetDeclinedNames() const { return m_declinedname; }
         bool HasTitle(uint32 bitIndex);
@@ -2337,6 +2388,7 @@ class LOOKING4GROUP_EXPORT Player : public Unit
         bool _LoadHomeBind(QueryResultAutoPtr result);
         void _LoadDeclinedNames(QueryResultAutoPtr result);
         void _LoadArenaTeamInfo(QueryResultAutoPtr result);
+        void _LoadInstanceTimeRestrictions(QueryResultAutoPtr result);
 
         /*********************************************************/
         /***                   SAVE SYSTEM                     ***/
@@ -2352,6 +2404,7 @@ class LOOKING4GROUP_EXPORT Player : public Unit
         void _SaveMonthlyQuestStatus();
         void _SaveSpells();
         void _SaveTutorials();
+        void _SaveInstanceTimeRestrictions();
 
         void _SetCreateBits(UpdateMask *updateMask, Player *target) const;
         void _SetUpdateBits(UpdateMask *updateMask, Player *target) const;
@@ -2375,8 +2428,6 @@ class LOOKING4GROUP_EXPORT Player : public Unit
 
         uint32 m_team;
         uint32 m_nextSave;
-        time_t m_speakTime;
-        uint32 m_speakCount;
         uint32 m_dungeonDifficulty;
 
         uint32 m_atLoginFlags;
@@ -2537,9 +2588,11 @@ class LOOKING4GROUP_EXPORT Player : public Unit
         uint32 m_timeSyncTimer;
         uint32 m_timeSyncClient;
         uint32 m_timeSyncServer;
-
+        
         // Current teleport data
         WorldLocation m_teleport_dest;
+        bool mSemaphoreTeleport_Near;
+        bool mSemaphoreTeleport_Far;
 
         // Temporary removed pet cache
         uint32 m_temporaryUnsummonedPetNumber;
@@ -2552,6 +2605,8 @@ class LOOKING4GROUP_EXPORT Player : public Unit
         Camera m_camera;
 
         bool m_outdoors;
+
+        InstanceTimeMap _instanceResetTimes;
 };
 
 typedef std::set<Player*> PlayerSet;

@@ -56,7 +56,7 @@ EndScriptData */
 #define SPELL_ENRAGE                27680                   //this spell need verification
 #define SPELL_SUMMON_WATER_ELEMENT  36459                   //not in use yet(in use ever?)
 #define SPELL_ELEMENTAL_SPAWNIN     25035
-#define SPELL_BLUE_BEAM             /*40227*/40227                   //channeled Hydross Beam Helper (not in use yet)
+#define SPELL_BLUE_BEAM             38015                   //channeled Hydross Beam Helper
 
 #define ENTRY_PURE_SPAWN            22035
 #define ENTRY_TAINTED_SPAWN         22036
@@ -117,12 +117,12 @@ struct boss_hydross_the_unstableAI : public ScriptedAI
         CorruptedForm = false;
         m_creature->SetMeleeDamageSchool(SPELL_SCHOOL_FROST);
         m_creature->ApplySpellImmune(0, IMMUNITY_DAMAGE, SPELL_SCHOOL_MASK_FROST, true);
-        m_creature->ApplySpellImmune(0, IMMUNITY_DAMAGE, SPELL_SCHOOL_MASK_NATURE, false);
+        m_creature->ApplySpellImmune(1, IMMUNITY_DAMAGE, SPELL_SCHOOL_MASK_NATURE, false);
 
         m_creature->SetUInt32Value(UNIT_FIELD_DISPLAYID, MODEL_CLEAN);
 
-        if (pInstance && pInstance->GetData(DATA_HYDROSSTHEUNSTABLEEVENT) != DONE)
-            pInstance->SetData(DATA_HYDROSSTHEUNSTABLEEVENT, NOT_STARTED);
+        if (pInstance && ((pInstance->GetData(DATA_HYDROSS_EVENT) != DONE) || (pInstance->GetData(DATA_HYDROSS_EVENT) != SPECIAL)))
+            pInstance->SetData(DATA_HYDROSS_EVENT, NOT_STARTED);
 
         beam = false;
         Summons.DespawnAll();
@@ -164,7 +164,7 @@ struct boss_hydross_the_unstableAI : public ScriptedAI
         DoScriptText(SAY_AGGRO, m_creature);
 
         if (pInstance)
-            pInstance->SetData(DATA_HYDROSSTHEUNSTABLEEVENT, IN_PROGRESS);
+            pInstance->SetData(DATA_HYDROSS_EVENT, IN_PROGRESS);
     }
 
     void KilledUnit(Unit *victim)
@@ -196,15 +196,17 @@ struct boss_hydross_the_unstableAI : public ScriptedAI
         Summons.Despawn(summon);
     }
 
-    void JustDied(Unit *victim)
+    void JustDied(Unit *killer)
     {
+        ServerFirst(killer);
+
         if (CorruptedForm)
             DoScriptText(SAY_CORRUPT_DEATH, m_creature);
         else
             DoScriptText(SAY_CLEAN_DEATH, m_creature);
 
-        if (pInstance)
-            pInstance->SetData(DATA_HYDROSSTHEUNSTABLEEVENT, DONE);
+        pInstance->SetData(DATA_HYDROSS_EVENT, DONE);
+
         Summons.DespawnAll();
     }
 
@@ -296,7 +298,7 @@ struct boss_hydross_the_unstableAI : public ScriptedAI
 
                     m_creature->SetMeleeDamageSchool(SPELL_SCHOOL_FROST);
                     m_creature->ApplySpellImmune(0, IMMUNITY_DAMAGE, SPELL_SCHOOL_MASK_FROST, true);
-                    m_creature->ApplySpellImmune(0, IMMUNITY_DAMAGE, SPELL_SCHOOL_MASK_NATURE, false);
+                    m_creature->ApplySpellImmune(1, IMMUNITY_DAMAGE, SPELL_SCHOOL_MASK_NATURE, false);
                 }
 
                 PosCheck_Timer = 2500;
@@ -367,7 +369,7 @@ struct boss_hydross_the_unstableAI : public ScriptedAI
                     DoSpawnCreature(ENTRY_TAINTED_SPAWN, SPAWN_X_DIFF4, SPAWN_Y_DIFF4, 3, 0, TEMPSUMMON_CORPSE_DESPAWN, 0);
 
                     m_creature->SetMeleeDamageSchool(SPELL_SCHOOL_NATURE);
-                    m_creature->ApplySpellImmune(0, IMMUNITY_DAMAGE, SPELL_SCHOOL_MASK_NATURE, true);
+                    m_creature->ApplySpellImmune(1, IMMUNITY_DAMAGE, SPELL_SCHOOL_MASK_NATURE, true);
                     m_creature->ApplySpellImmune(0, IMMUNITY_DAMAGE, SPELL_SCHOOL_MASK_FROST, false);
                 }
 

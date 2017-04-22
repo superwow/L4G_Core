@@ -43,7 +43,7 @@ ChatCommand * ChatHandler::getCommandTable()
     {
         { "addon",          PERM_ADM,       true,   &ChatHandler::HandleAccountSetAddonCommand,       "", NULL },
         { "permissions",    PERM_ADM,       true,   &ChatHandler::HandleAccountSetPermissionsCommand, "", NULL },
-        { "password",       PERM_GMT,       true,   &ChatHandler::HandleAccountSetPasswordCommand,    "", NULL },
+        { "password",       PERM_ADM,       true,   &ChatHandler::HandleAccountSetPasswordCommand,    "", NULL },
         { "multiacc",       PERM_GMT,       true,   &ChatHandler::HandleAccountSetMultiaccCommand,    "", NULL },
         { NULL,             0,              false,  NULL,                                             "", NULL }
     };
@@ -760,7 +760,6 @@ ChatCommand * ChatHandler::getCommandTable()
         { "vipdel",         PERM_ADM,       true,   &ChatHandler::HandleDelVIPAccountCommand,       "", NULL },
         { "charstoplevel",  PERM_PLAYER,    true,   &ChatHandler::HandleStopLevelCharacterCommand,  "", NULL },
         { "charactivatelevel", PERM_PLAYER, true,   &ChatHandler::HandleActivateLevelCharacterCommand, "", NULL },
-        { "characterimport",PERM_GMT,       true,   &ChatHandler::HandleCharacterImportCommand,     "", NULL },
         { "changeaccount",  PERM_GMT,       true,   &ChatHandler::HandleChangeAccountCommand,     "", NULL },
         { "mentoring",      PERM_PLAYER,    true,   &ChatHandler::HandleMentoringCommand,           "", NULL},
         { "mentorlist",     PERM_PLAYER,    false,  &ChatHandler::HandleMentorListCommand,          "", NULL },
@@ -1017,6 +1016,10 @@ bool ChatHandler::ExecuteCommandInTable(ChatCommand *table, const char* text, co
                     if (table[i].Name != "password")
                         sLog.outCommand(m_session->GetAccountId(),"Command: %s [Player: %s (Account: %u) X: %f Y: %f Z: %f Map: %u Selected: (GUID: %u)]",
                             fullcmd.c_str(),p->GetName(),m_session->GetAccountId(),p->GetPositionX(),p->GetPositionY(),p->GetPositionZ(),p->GetMapId(),
+                            GUID_LOPART(sel_guid));
+                    else 
+                        sLog.outCommand(m_session->GetAccountId(),"Command: PASSWORDCMD!!! [Player: %s (Account: %u) X: %f Y: %f Z: %f Map: %u Selected: (GUID: %u)]",
+                            p->GetName(),m_session->GetAccountId(),p->GetPositionX(),p->GetPositionY(),p->GetPositionZ(),p->GetMapId(),
                             GUID_LOPART(sel_guid));
                 }
             }

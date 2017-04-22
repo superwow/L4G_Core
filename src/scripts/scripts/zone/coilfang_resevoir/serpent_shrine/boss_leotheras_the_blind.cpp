@@ -199,7 +199,7 @@ struct boss_leotheras_the_blindAI : public ScriptedAI
         PulseCombat_Timer = 5000;
         Whirlwind_Timer = 15000;
         ChaosBlast_Timer = 1000;
-        SwitchToDemon_Timer = 45000;
+        SwitchToDemon_Timer = 60000;
         SwitchToHuman_Timer = 60000;
         Berserk_Timer = 600000;
         InnerDemons_Timer = 30000;
@@ -209,18 +209,19 @@ struct boss_leotheras_the_blindAI : public ScriptedAI
         IsFinalForm = false;
         NeedThreatReset = false;
         InnderDemon_Count = 0;
-        m_creature->SetSpeed( MOVE_RUN, 2.0f, true);
+        m_creature->SetSpeed( MOVE_RUN, 2.4f, true);
         m_creature->SetUInt32Value(UNIT_FIELD_DISPLAYID, MODEL_NIGHTELF);
         m_creature->SetUInt32Value(UNIT_VIRTUAL_ITEM_SLOT_DISPLAY  , 0);
         m_creature->SetUInt32Value(UNIT_VIRTUAL_ITEM_SLOT_DISPLAY+1, 0);
         m_creature->CastSpell(m_creature, SPELL_DUAL_WIELD, true);
         m_creature->SetCorpseDelay(1000*60*60);
 
-        if(pInstance && pInstance->GetData(DATA_LEOTHERASTHEBLINDEVENT) != DONE)
-            pInstance->SetData(DATA_LEOTHERASTHEBLINDEVENT, NOT_STARTED);
+        if(pInstance && ((pInstance->GetData(DATA_LEOTHERAS_EVENT) != DONE) || (pInstance->GetData(DATA_LEOTHERAS_EVENT) != SPECIAL)))
+            pInstance->SetData(DATA_LEOTHERAS_EVENT, NOT_STARTED);
 
         m_creature->SetReactState(REACT_AGGRESSIVE);
         m_creature->SetMeleeDamageSchool(SPELL_SCHOOL_NORMAL);
+        DespawnDemon();
     }
 
     void CheckChannelers()
@@ -276,7 +277,7 @@ struct boss_leotheras_the_blindAI : public ScriptedAI
         DoZoneInCombat();
         DoScriptText(SAY_AGGRO, m_creature);
         if(pInstance)
-            pInstance->SetData(DATA_LEOTHERASTHEBLINDEVENT, IN_PROGRESS);
+            pInstance->SetData(DATA_LEOTHERAS_EVENT, IN_PROGRESS);
     }
 
     void CheckBanish()
@@ -376,8 +377,10 @@ struct boss_leotheras_the_blindAI : public ScriptedAI
             DoScriptText(RAND(SAY_NIGHTELF_SLAY1, SAY_NIGHTELF_SLAY2, SAY_NIGHTELF_SLAY3), m_creature);
     }
 
-    void JustDied(Unit *victim)
+    void JustDied(Unit *killer)
     {
+        ServerFirst(killer);
+
         DoScriptText(SAY_DEATH, m_creature);
 
         //despawn copy
@@ -387,8 +390,8 @@ struct boss_leotheras_the_blindAI : public ScriptedAI
             if (pUnit)
                 pUnit->DealDamage(pUnit, pUnit->GetHealth(), DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, NULL, false);
         }
-        if (pInstance)
-            pInstance->SetData(DATA_LEOTHERASTHEBLINDEVENT, DONE);
+
+        pInstance->SetData(DATA_LEOTHERAS_EVENT, DONE);
     }
 
     void EnterCombat(Unit *who)
@@ -419,7 +422,7 @@ struct boss_leotheras_the_blindAI : public ScriptedAI
         {
             DoZoneInCombat();
             PulseCombat_Timer = 2000;
-            me->SetSpeed(MOVE_RUN, DemonForm ? 3.0 : 2.0);
+            me->SetSpeed(MOVE_RUN, DemonForm ? 3.0 : 2.4);
         }
         else
             PulseCombat_Timer -= diff;
@@ -529,7 +532,7 @@ struct boss_leotheras_the_blindAI : public ScriptedAI
                     int damage = 100;
                     m_creature->CastCustomSpell(m_creature->getVictim(), SPELL_CHAOS_BLAST, &damage, NULL, NULL, false, NULL, NULL, m_creature->GetGUID());
                 }
-                ChaosBlast_Timer = 3000;
+                ChaosBlast_Timer = urand(2000, 3000);
             }
             else
                 ChaosBlast_Timer -= diff;
@@ -691,7 +694,7 @@ struct boss_leotheras_the_blind_demonformAI : public ScriptedAI
                 //m_creature->CastSpell(m_creature->getVictim(),SPELL_CHAOS_BLAST,true);
                 int damage = 100;
                 m_creature->CastCustomSpell(m_creature->getVictim(), SPELL_CHAOS_BLAST, &damage, NULL, NULL, false, NULL, NULL, m_creature->GetGUID());
-                ChaosBlast_Timer = 3000;
+                ChaosBlast_Timer = urand(2000, 3000);
             }
          }else ChaosBlast_Timer -= diff;
 
@@ -715,12 +718,12 @@ struct mob_greyheart_spellbinderAI : public ScriptedAI
 
     void Reset()
     {
-        Mindblast_Timer  = 3000 + rand()%5000;
-        Earthshock_Timer = 5000 + rand()%5000;
+        Mindblast_Timer  = urand(3000, 8000);
+        Earthshock_Timer = urand(5000, 10000);
 
         if(pInstance)
         {
-            if (pInstance->GetData(DATA_LEOTHERASTHEBLINDEVENT) != NOT_STARTED)
+            if (pInstance->GetData(DATA_LEOTHERAS_EVENT) != NOT_STARTED)
             {
                 m_creature->Kill(m_creature,false);
                 return;
@@ -736,7 +739,9 @@ struct mob_greyheart_spellbinderAI : public ScriptedAI
     {
         m_creature->InterruptNonMeleeSpells(false);
         if(pInstance)
+        {
             pInstance->SetData64(DATA_LEOTHERAS_EVENT_STARTER, who->GetGUID());
+        }
     }
 
     void JustRespawned()
@@ -789,7 +794,7 @@ struct mob_greyheart_spellbinderAI : public ScriptedAI
             if(Unit* target = SelectUnit(SELECT_TARGET_RANDOM,0, GetSpellMaxRange(SPELL_MINDBLAST), true))
                 DoCast(target, SPELL_MINDBLAST);
 
-            Mindblast_Timer = 10000 + rand()%5000;
+            Mindblast_Timer = urand(10000, 15000);
         }else Mindblast_Timer -= diff;
 
         if(Earthshock_Timer < diff)
@@ -812,7 +817,7 @@ struct mob_greyheart_spellbinderAI : public ScriptedAI
                     }
                 }
             }
-            Earthshock_Timer = 8000 + rand()%7000;
+            Earthshock_Timer = urand(8000, 15000);
         }else Earthshock_Timer -= diff;
         DoMeleeAttackIfReady();
     }

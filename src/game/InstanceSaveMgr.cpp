@@ -60,7 +60,7 @@ void InstanceSaveManager::UnbindBeforeDelete()
     {
         InstanceSave *save = itr->second;
         if (save == nullptr)
-			continue;
+            continue;
 
         for (InstanceSave::PlayerListType::iterator itr2 = save->m_playerList.begin(); itr2 != save->m_playerList.end(); ++itr2)
         {
@@ -71,7 +71,8 @@ void InstanceSaveManager::UnbindBeforeDelete()
         save->m_playerList.clear();
 
         for (InstanceSave::GroupListType::iterator itr2 = save->m_groupList.begin(); itr2 != save->m_groupList.end(); ++itr2)
-            (*itr2)->UnbindInstance(save->GetMapId(), save->GetDifficulty(), true);
+            if ((*itr2) != nullptr) // just to prevent crashes on shutdown - we must find why groups can be nulled before calling this function
+                (*itr2)->UnbindInstance(save->GetMapId(), save->GetDifficulty(), true);
 
         save->m_groupList.clear();
         delete save;
@@ -344,6 +345,7 @@ void InstanceSaveManager::PackInstances()
             RealmDataDatabase.PExecute("UPDATE group_instance SET instance = '%u' WHERE instance = '%u'", InstanceNumber, *i);
             RealmDataDatabase.PExecute("UPDATE group_saved_loot SET instanceId = '%u' WHERE instanceId = '%u'", InstanceNumber, *i);
             RealmDataDatabase.PExecute("UPDATE characters SET instance_id = '%u' WHERE instance_id = '%u'", InstanceNumber, *i);
+            RealmDataDatabase.PExecute("UPDATE account_instance_times  SET instance_id = '%u' WHERE instance_id = '%u'", InstanceNumber, *i);
             RealmDataDatabase.CommitTransaction();
         }
 

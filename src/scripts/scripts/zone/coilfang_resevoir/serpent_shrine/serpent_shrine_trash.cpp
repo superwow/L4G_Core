@@ -167,7 +167,7 @@ CreatureAI* GetAI_mob_vashjir_honor_guard(Creature *_Creature)
     return new mob_vashjir_honor_guardAI(_Creature);
 }
 
-#define SPELL_SUMMON_SERPENTSHRINE_PARASITE         39053
+#define SPELL_SUMMON_SERPENTSHRINE_PARASITE         39044
 #define SPELL_INITIAL_INFECTION                     39032
 #define SPELL_SPORE_QUAKE                           38976
 #define SPELL_ACID_GEYSER                           38971
@@ -231,7 +231,7 @@ struct mob_underbog_colossusAI : public ScriptedAI
             entry = NPC_COLOSSUS_LURKER;
             break;
         case 3:
-            count = urand(8, 10);
+            count = urand(10, 15);
             entry = NPC_COLOSSUS_RAGER;
             break;
         case 4:
@@ -253,8 +253,7 @@ struct mob_underbog_colossusAI : public ScriptedAI
     void UpdateAI(const uint32 diff)
     {
         if(!UpdateVictim())
-            return;
-
+            return;        
         switch(type)
         {
         case 0:
@@ -384,9 +383,11 @@ struct mob_coilfang_frenzyAI : public ScriptedAI
 {
     mob_coilfang_frenzyAI(Creature *c) : ScriptedAI(c) {}
 
+    uint32 WaterCheckTimer;
+
     void Reset()
     {
-
+        WaterCheckTimer = 2000;
     }
 
     void EnterEvadeMode()
@@ -399,23 +400,39 @@ struct mob_coilfang_frenzyAI : public ScriptedAI
 
     void UpdateAI(const uint32 diff)
     {
+        bool PlayerInWater;
         float x, y, z;
         me->GetPosition(x, y, z);
 
-        if(z > WATER_Z)
-            me->Relocate(x, y, WATER_Z, me->GetOrientation());
-
-        if(!UpdateVictim())
-            return;
-
-        Unit *victim = me->getVictim();
-
-        victim->GetPosition(x, y, z);
-        if(z - 0.5f > WATER_Z)
-        {
-            EnterEvadeMode();
-            return;
+        if (WaterCheckTimer < diff) {
+            if (!UpdateVictim() || me->getVictim()->IsInWater() == false) {
+                if (z + 0.2f > WATER_Z)
+                {
+                    PlayerInWater = false;
+                    std::list<Unit*> tmpList;
+                    SelectUnitList(tmpList, 25, SELECT_TARGET_RANDOM, 100.0f, true);
+                    int i = 0;
+                    for (std::list<Unit*>::const_iterator itr = tmpList.begin(); itr != tmpList.end(); ++itr)
+                    {
+                        if ((*itr)->IsInWater() == true)
+                        {
+                            PlayerInWater = true;
+                            me->GetMotionMaster()->MoveChase((*itr));
+                            AttackStart((*itr));
+                        }
+                        WaterCheckTimer = 2000;
+                    }
+                    if (PlayerInWater == false)
+                    {
+                        me->ForcedDespawn(1500);
+                    }
+                }
+            }
         }
+        else 
+        {
+            WaterCheckTimer -= diff;
+        }                                    
 
         DoMeleeAttackIfReady();
     }
@@ -529,6 +546,7 @@ CreatureAI* GetAI_mob_coilfang_serpentguard(Creature *_Creature)
     return new mob_coilfang_serpentguardAI(_Creature);
 }
 
+#define SPELL_CHAIN_LIGHTNING       38718
 
 struct mob_greyheart_tidecallerAI : public ScriptedAI
 {
@@ -537,11 +555,13 @@ struct mob_greyheart_tidecallerAI : public ScriptedAI
     uint32 elemental_timer;
     uint32 totem_timer;
     uint32 check_timer;
+    uint32 chain_lightning_timer;
     bool totem, elemental;
 
     void Reset()
     {
         elemental_timer = 15000;
+        chain_lightning_timer = urand(4000, 8000);
         totem_timer = 7000;
         check_timer = 1000;
         totem, elemental = false;
@@ -558,6 +578,13 @@ struct mob_greyheart_tidecallerAI : public ScriptedAI
             elemental = true;
         }
         else elemental_timer -= diff;
+        
+        if (chain_lightning_timer <= diff)
+        {
+            AddSpellToCast(SPELL_CHAIN_LIGHTNING, CAST_RANDOM_WITHOUT_TANK);
+            chain_lightning_timer = urand(5000, 10000); // find prenerf spell
+        }
+        else chain_lightning_timer -= diff;
 
         if (!totem && totem_timer <= diff)
         {

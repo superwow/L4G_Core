@@ -1000,7 +1000,8 @@ GridMap* TerrainInfo::GetGrid(const float x, const float y)
         return NULL;
 
     //quick check if GridMap already loaded
-    GridMap * pMap = m_GridMaps[gx][gy];
+    GridMap * pMap;
+    pMap = m_GridMaps[gx][gy];
     if(!pMap)
          pMap = LoadMapAndVMap(gx, gy);
 
@@ -1032,6 +1033,7 @@ GridMap* TerrainInfo::LoadMapAndVMap(const uint32 x, const uint32 y)
             }
 
             delete [] tmp;
+            m_GridMaps[x][y] = map;
 
             //load VMAPs for current map/grid...
             const MapEntry * i_mapEntry = sMapStore.LookupEntry(m_mapId);
@@ -1051,8 +1053,6 @@ GridMap* TerrainInfo::LoadMapAndVMap(const uint32 x, const uint32 y)
             }
 
             MMAP::MMapFactory::createOrGetMMapManager()->loadMap(m_mapId, x, y);
-
-            m_GridMaps[x][y] = map;
         }
     }
 
@@ -1127,7 +1127,7 @@ bool TerrainInfo::IsPathFindingEnabled(const Unit* unit) const
         if (IsPathfindingForceEnabled(unit))
             return true;
 
-        // always use mmaps for pets of players (can still be disabled by extra-flag for pet creature)
+        // always use mmaps for pets of players
         if (unit->GetTypeId() == TYPEID_UNIT && ((Creature*)unit)->isPet() && unit->GetOwner() &&
             unit->GetOwner()->GetTypeId() == TYPEID_PLAYER)
             return true;
@@ -1176,6 +1176,11 @@ bool TerrainInfo::IsPathfindingForceEnabled(const Unit* unit) const
 
 bool TerrainInfo::IsPathfindingForceDisabled(const Unit* unit) const
     {
+        // always use mmaps for pets of players
+        if (unit->GetTypeId() == TYPEID_UNIT && ((Creature*)unit)->isPet() && unit->GetOwner() &&
+            unit->GetOwner()->GetTypeId() == TYPEID_PLAYER)
+            return false;
+
         if (const Creature* pCreature = dynamic_cast<const Creature*>(unit))
         {
             if (const CreatureInfo* pInfo = pCreature->GetCreatureInfo())

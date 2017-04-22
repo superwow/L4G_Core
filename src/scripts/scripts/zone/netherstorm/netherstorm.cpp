@@ -1207,8 +1207,8 @@ bool GOUse_go_ethereum_prison(Player* player, GameObject* go)
         break;
     }
 
-	go->SetRespawnTime(120); 
-	go->SetLootState(GO_READY);
+    go->SetRespawnTime(120); 
+    go->SetLootState(GO_READY);
     go->UseDoorOrButton(5*MINUTE*IN_MILISECONDS);
 
     return true;
@@ -2591,7 +2591,7 @@ bool GossipSelect_npc_saeed(Player* player, Creature* creature, uint32 sender, u
     {
         creature->setFaction(FACTION_ESCORT_N_NEUTRAL_ACTIVE);
         ((npc_saeedAI*)creature->AI())->Start(true, true, player->GetGUID());
-        player->KilledMonster(20985, creature->GetGUID());
+        player->RewardPlayerAndGroupAtEvent(20985, creature);
         player->CLOSE_GOSSIP_MENU();
     }
 

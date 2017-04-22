@@ -50,9 +50,24 @@ void HomeMovementGenerator<Creature>::_setTargetLocation(Creature & owner)
     // at apply we can select more nice return points base at current move generator
     owner.GetHomePosition(x, y, z, o);
 
+    PathFinder* _path = new PathFinder(&owner);
+
+    bool result = _path->calculate(x, y, z, true);
+
     init.SetFacing(o);
 
-    init.MoveTo(x,y,z);
+    if (!result || _path->getPathType() & PATHFIND_NOPATH)
+    {
+        init.MoveTo(x, y, z);
+        init.SetWalk(false);
+        init.Launch();
+
+        arrived = false;
+        owner.clearUnitState(UNIT_STAT_ALL_STATE);
+        return;
+    }
+    
+    init.MovebyPath(_path->getPath());
     init.SetWalk(false);
     init.Launch();
 

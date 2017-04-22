@@ -224,9 +224,10 @@ void PetAI::AutocastPreparedSpells()
 
         SpellCastTargets targets;
 
-        if (target)
-            targets.setUnitTarget(target);
-
+        if (!target || !target->isAlive() || !me->IsWithinLOSInMap(target))
+            return;
+        
+        targets.setUnitTarget(target);
         if (!me->HasInArc(M_PI, target))
         {
             me->SetInFront(target);
@@ -290,8 +291,7 @@ void PetAI::UpdateAI(const uint32 diff)
     if (m_creature->getVictim())
     {
         if (_needToStop())
-        {
-            sLog.outLog(LOG_DEFAULT,  "PetAI (guid = %u) is stopping attack.", m_creature->GetGUIDLow());
+        {            
             _stopAttack();
             return;
         }
@@ -354,12 +354,14 @@ void PetAI::UpdateAI(const uint32 diff)
         }
         else if (m_creature->GetCharmInfo()->HasCommandState(COMMAND_FOLLOW))
         {
-            if (!m_creature->hasUnitState(UNIT_STAT_FOLLOW) && !m_creature->HasAura(17854) && !m_creature->HasAura(17767) 
-                && !m_creature->HasAura(17850) && !m_creature->HasAura(17851) && !m_creature->HasAura(17853) && !m_creature->HasAura(17852)
-                && !m_creature->HasAura(27272) && !me->hasUnitState(UNIT_STAT_CASTING))
-            {
-                m_creature->GetMotionMaster()->MoveFollow(owner, PET_FOLLOW_DIST, PET_FOLLOW_ANGLE);
-            }
+            //Do not move while channeling or if beeing stunned/freezed
+            if (!(m_creature->GetCurrentSpellProto(CURRENT_CHANNELED_SPELL) 
+                && (m_creature->GetCurrentSpellProto(CURRENT_CHANNELED_SPELL)->ChannelInterruptFlags & CHANNEL_INTERRUPT_FLAG_INTERRUPT)))
+                if (!m_creature->hasUnitState(UNIT_STAT_FOLLOW)
+                    && !m_creature->hasUnitState(UNIT_STAT_CAN_NOT_REACT) && !m_creature->hasUnitState(UNIT_STAT_NOT_MOVE))
+                {
+                    m_creature->GetMotionMaster()->MoveFollow(owner, PET_FOLLOW_DIST, PET_FOLLOW_ANGLE);
+                }
         }
     }
 

@@ -473,6 +473,8 @@
     <ClCompile Include="..\..\src\scripts\scripts\creature\simple_ai.cpp" />
     <ClCompile Include="..\..\src\scripts\scripts\custom\barber.cpp" />
     <ClCompile Include="..\..\src\scripts\scripts\custom\boss_easter_event.cpp" />
+    <ClCompile Include="..\..\src\scripts\scripts\custom\custom_instant_70.cpp" />
+    <ClCompile Include="..\..\src\scripts\scripts\custom\custom_transfer.cpp" />
     <ClCompile Include="..\..\src\scripts\scripts\custom\enchant_npc.cpp" />
     <ClCompile Include="..\..\src\scripts\scripts\custom\lootbox.cpp" />
     <ClCompile Include="..\..\src\scripts\scripts\guard\guard_ai.cpp" />
@@ -538,6 +540,7 @@
     <ClCompile Include="..\..\src\scripts\scripts\zone\moonglade\moonglade.cpp" />
     <ClCompile Include="..\..\src\scripts\scripts\zone\razorfen_kraul\instance_razorfen_kraul.cpp" />
     <ClCompile Include="..\..\src\scripts\scripts\zone\razorfen_kraul\razorfen_kraul.cpp" />
+    <ClCompile Include="..\..\src\scripts\scripts\zone\redridge_mountains\redridge_mountains.cpp" />
     <ClCompile Include="..\..\src\scripts\scripts\zone\ruins_of_ahnqiraj\boss_ayamiss.cpp" />
     <ClCompile Include="..\..\src\scripts\scripts\zone\ruins_of_ahnqiraj\boss_buru.cpp" />
     <ClCompile Include="..\..\src\scripts\scripts\zone\ruins_of_ahnqiraj\boss_kurinnaxx.cpp" />
@@ -722,6 +725,7 @@
     <ClCompile Include="..\..\src\scripts\scripts\zone\hellfire_citadel\shattered_halls\instance_shattered_halls.cpp" />
     <ClCompile Include="..\..\src\scripts\scripts\zone\hellfire_peninsula\boss_doomlord_kazzak.cpp" />
     <ClCompile Include="..\..\src\scripts\scripts\zone\hellfire_peninsula\hellfire_peninsula.cpp" />
+    <ClCompile Include="..\..\src\scripts\scripts\zone\hellfire_peninsula\stair_of_destiny.cpp" />
     <ClCompile Include="..\..\src\scripts\scripts\zone\karazhan\boss_curator.cpp" />
     <ClCompile Include="..\..\src\scripts\scripts\zone\karazhan\boss_maiden_of_virtue.cpp" />
     <ClCompile Include="..\..\src\scripts\scripts\zone\karazhan\boss_midnight.cpp" />
@@ -870,6 +874,7 @@
     <ClInclude Include="..\..\src\scripts\scripts\guard\guard_ai.h" />
     <ClInclude Include="..\..\src\scripts\scripts\zone\aunchindoun\mana_tombs\def_mana_tombs.h" />
     <ClInclude Include="..\..\src\scripts\scripts\zone\blackrock_spire\def_blackrock_spire.h" />
+    <ClInclude Include="..\..\src\scripts\scripts\zone\coilfang_resevoir\slave_pens\slave_pens.h" />
     <ClInclude Include="..\..\src\scripts\scripts\zone\deadmines\def_deadmines.h" />
     <ClInclude Include="..\..\src\scripts\scripts\zone\gruuls_lair\def_gruuls_lair.h" />
     <ClInclude Include="..\..\src\scripts\scripts\zone\karazhan\chess_event.h" />

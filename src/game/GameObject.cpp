@@ -63,6 +63,8 @@ GameObject::GameObject() : WorldObject()
     m_goInfo = NULL;
     m_goData = NULL;
 
+    m_lootGenerationTime = 0;
+
     m_DBTableGuid = 0;
 }
 
@@ -1462,6 +1464,9 @@ void GameObject::CastSpell(Unit* target, uint32 spell)
         trigger->CastSpell(target, spell, true); // no orginal caster should prevent 'on spell cast' triggering
         return;
     }
+    // Shadow sight remove stealth
+    if (spell == 34709)
+        target->RemoveSpellsCausingAura(SPELL_AURA_MOD_STEALTH);
 
     if (target)
     {

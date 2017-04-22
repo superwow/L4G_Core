@@ -172,10 +172,13 @@ void BattleGround::Update(uint32 diff)
     }
 
     // remove offline players from bg after 1 minutes && afk kick
-    if (GetPlayersSize())
+    if (GetPlayersSize() && !m_Players.empty())
     {
-        for (BattleGroundPlayerMap::iterator itr = m_Players.begin(); itr != m_Players.end(); ++itr)
+        BattleGroundPlayerMap::iterator itr, next;
+        for (itr = m_Players.begin(); itr != m_Players.end(); itr = next)
         {
+            next = itr;
+            ++next;
             Player *plr = sObjectMgr.GetPlayer(itr->first);
             itr->second.LastOnlineTime += diff;
 
@@ -186,7 +189,7 @@ void BattleGround::Update(uint32 diff)
                     m_RemovedPlayers[itr->first] = 1;           // add to remove list (BG)
 
             if (plr && plr->HasAura(SPELL_AURA_PLAYER_INACTIVE))
-                RemovePlayerAtLeave(itr->first, true, true);
+                RemovePlayerAtLeave(itr->first, true, true); // itr is erased here! Do not change any battleground's private variables !
         }
     }
 
@@ -233,7 +236,6 @@ void BattleGround::Update(uint32 diff)
             if (!plr)
                 continue;
             plr->ResurrectPlayer(1.0f);
-
             //restore player's pet
             if (plr->GetLastPetNumber() && plr->isAlive())
             {
@@ -241,12 +243,14 @@ void BattleGround::Update(uint32 diff)
 
                if (!NewPet->LoadPetFromDB(plr, 0, plr->GetLastPetNumber(), true))
                     delete NewPet;
+
                //restore pet's Health and Mana
                else if (plr->getClass() == CLASS_HUNTER)
                {
+                   plr->CastSpell(NewPet, SPELL_REVIVE_PET, true);
                    NewPet->SetHealth(NewPet->GetMaxHealth());
-                   //NewPet->SetPower(POWER_MANA,NewPet->GetMaxPower(POWER_MANA));
-                    NewPet->SetPower(POWER_HAPPINESS ,NewPet->GetMaxPower(POWER_HAPPINESS));
+                   NewPet->SetPower(NewPet->getPowerType(), NewPet->GetMaxPower(NewPet->getPowerType()));
+                   NewPet->SetPower(POWER_HAPPINESS ,NewPet->GetMaxPower(POWER_HAPPINESS));
                }else if (plr->getClass() == CLASS_WARLOCK)
                {
                    NewPet->SetHealth(NewPet->GetMaxHealth());
@@ -368,6 +372,19 @@ void BattleGround::SendPacketToTeam(uint32 TeamID, WorldPacket *packet, Player *
 
         if (team && team == TeamID)
             plr->SendPacketToSelf(packet);
+    }
+}
+
+void BattleGround::SendPacketToEnemyTeam(uint32 TeamID, WorldPacket packet)
+{
+    for (BattleGroundPlayerMap::iterator itr = m_Players.begin(); itr != m_Players.end(); ++itr)
+    {
+        if (Player *plr = sObjectMgr.GetPlayer(itr->first))
+        {
+            uint32 team = GetPlayerTeam(plr->GetGUID());
+            if (team && team != TeamID)
+                plr->SendPacketToSelf(&packet);
+        }
     }
 }
 
@@ -627,7 +644,7 @@ void BattleGround::EndBattleGround(uint32 winner)
                     if (Player* player = sObjectMgr.GetPlayer(itr->first))
                     {
                         sLog.outLog(LOG_ARENA, "Statistics for %s (GUID: " UI64FMTD ", Team: %d, IP: %s): %u damage, %u healing, %u killing blows", player->GetName(), itr->first, player->GetArenaTeamId(m_ArenaType == 5 ? 2 : m_ArenaType == 3), player->GetSession()->GetRemoteAddress().c_str(), itr->second->DamageDone, itr->second->HealingDone, itr->second->KillingBlows);
-						RealmDataDatabase.PExecute("INSERT INTO arena_logging (timestamp, playername, guid, team, ipaddress, damage, healing, killingblows) VALUES (NOW(), '%s', '%u', '%d', '%s', '%u', '%u', '%u')", player->GetName(), GUID_LOPART(player->GetGUID()), player->GetArenaTeamId(m_ArenaType == 5 ? 2 : m_ArenaType == 3), player->GetSession()->GetRemoteAddress().c_str(), itr->second->DamageDone, itr->second->HealingDone, itr->second->KillingBlows);
+                        RealmDataDatabase.PExecute("INSERT INTO arena_logging (timestamp, playername, guid, team, ipaddress, damage, healing, killingblows) VALUES (NOW(), '%s', '%u', '%d', '%s', '%u', '%u', '%u')", player->GetName(), GUID_LOPART(player->GetGUID()), player->GetArenaTeamId(m_ArenaType == 5 ? 2 : m_ArenaType == 3), player->GetSession()->GetRemoteAddress().c_str(), itr->second->DamageDone, itr->second->HealingDone, itr->second->KillingBlows);
                     }
         }
         else

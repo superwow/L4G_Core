@@ -24,6 +24,8 @@ EndScriptData */
 #include "precompiled.h"
 #include "def_the_eye.h"
 
+#define AGGRO_RANGE                             42.0
+
 #define SAY_AGGRO                           -1550007
 #define SAY_SUMMON1                         -1550008
 #define SAY_SUMMON2                         -1550009
@@ -72,6 +74,7 @@ struct boss_high_astromancer_solarianAI : public ScriptedAI
 {
     boss_high_astromancer_solarianAI(Creature *c) : ScriptedAI(c), Summons(m_creature)
     {
+        m_creature->SetAggroRange(AGGRO_RANGE);
         pInstance = (c->GetInstanceData());
 
         defaultarmor = m_creature->GetArmor();
@@ -109,9 +112,9 @@ struct boss_high_astromancer_solarianAI : public ScriptedAI
 
     void Reset()
     {
-        ArcaneMissiles_Timer = 2000;
+        ArcaneMissiles_Timer = 0;
         MarkOfTheAstromancer_Timer = 15000;
-        BlindingLight_Timer = 41000;
+        BlindingLight_Timer = 35000;
         Fear_Timer = 20000;
         VoidBolt_Timer = 10000;
         Phase1_Timer = 50000;
@@ -123,7 +126,7 @@ struct boss_high_astromancer_solarianAI : public ScriptedAI
         MarkOfTheSolarian_Timer=45000;
         Jump_Timer=8000;
         Check_Timer = 3000;
-        Wrath_Timer = 20000+rand()%5000;//twice in phase one
+        Wrath_Timer = urand(15000, 25000);//twice in phase one
         Phase = 1;
 
         if(pInstance && pInstance->GetData(DATA_HIGHASTROMANCERSOLARIANEVENT) != DONE)
@@ -134,6 +137,7 @@ struct boss_high_astromancer_solarianAI : public ScriptedAI
         m_creature->SetVisibility(VISIBILITY_ON);
         m_creature->SetFloatValue(OBJECT_FIELD_SCALE_X, defaultsize);
         m_creature->SetUInt32Value(UNIT_FIELD_DISPLAYID, MODEL_HUMAN);
+        m_creature->SetMeleeDamageSchool(SPELL_SCHOOL_NORMAL);
 
         Summons.DespawnAll();
     }
@@ -143,8 +147,10 @@ struct boss_high_astromancer_solarianAI : public ScriptedAI
         DoScriptText(RAND(SAY_KILL1, SAY_KILL2, SAY_KILL3), m_creature);
     }
 
-    void JustDied(Unit *victim)
+    void JustDied(Unit *killer)
     {
+        ServerFirst(killer);
+
         m_creature->SetFloatValue(OBJECT_FIELD_SCALE_X, defaultsize);
         m_creature->SetUInt32Value(UNIT_FIELD_DISPLAYID, MODEL_HUMAN);
         DoScriptText(SAY_DEATH, m_creature);
@@ -235,7 +241,7 @@ struct boss_high_astromancer_solarianAI : public ScriptedAI
             if(BlindingLight_Timer < diff)
             {
                 BlindingLight = true;
-                BlindingLight_Timer = 45000;
+                BlindingLight_Timer = urand(20000, 40000);
             }
             else
                 BlindingLight_Timer -= diff;
@@ -244,10 +250,13 @@ struct boss_high_astromancer_solarianAI : public ScriptedAI
             {
                 m_creature->InterruptNonMeleeSpells(false);
 
-                if(Unit *target =  SelectUnit(SELECT_TARGET_RANDOM,1, GetSpellMaxRange(SPELL_WRATH_OF_THE_ASTROMANCER), true, m_creature->getVictimGUID()))
+                if (Unit *target = SelectUnit(SELECT_TARGET_RANDOM, 1, GetSpellMaxRange(SPELL_WRATH_OF_THE_ASTROMANCER), true, m_creature->getVictimGUID()))
+                {
+                    me->SetInFront(target);
                     DoCast(target, SPELL_WRATH_OF_THE_ASTROMANCER, true);
+                }
 
-                Wrath_Timer = 20000+rand()%5000;
+                Wrath_Timer = urand(15000, 25000);
             }
             else
                 Wrath_Timer -= diff;
@@ -263,8 +272,8 @@ struct boss_high_astromancer_solarianAI : public ScriptedAI
                 {
                     Unit* target = SelectUnit(SELECT_TARGET_RANDOM, 0, GetSpellMaxRange(SPELL_ARCANE_MISSILES), true);
 
-                    if(!m_creature->HasInArc(2.5f, target))
-                        target = m_creature->getVictim();
+                    //if(!m_creature->HasInArc(2.5f, target))
+                    //    target = m_creature->getVictim();
 
                     if(target)
                     {
@@ -272,7 +281,7 @@ struct boss_high_astromancer_solarianAI : public ScriptedAI
                         DoCast(target, SPELL_ARCANE_MISSILES);
                     }
                 }
-                ArcaneMissiles_Timer = 3000;
+                ArcaneMissiles_Timer = urand(3000, 4000);
             }
             else
                 ArcaneMissiles_Timer -= diff;
@@ -397,6 +406,8 @@ struct boss_high_astromancer_solarianAI : public ScriptedAI
         }
         else if(Phase == 4)
         {
+            m_creature->SetMeleeDamageSchool(SPELL_SCHOOL_ARCANE);
+            
             //Fear_Timer
             if (Fear_Timer < diff)
             {
@@ -450,9 +461,9 @@ struct mob_solarium_priestAI : public ScriptedAI
 
     void Reset()
     {
-        healTimer = 9000;
-        holysmiteTimer = 1;
-        aoesilenceTimer = 15000;
+        healTimer = urand(1, 1000);
+        holysmiteTimer = urand(1, 1000);
+        aoesilenceTimer = 5000;
     }
 
     void EnterCombat(Unit *who)
@@ -473,20 +484,20 @@ struct mob_solarium_priestAI : public ScriptedAI
             if(target)
             {
                 DoCast(target,SOLARIUM_HEAL);
-                healTimer = 9000;
+                healTimer = urand(3000, 9000);
             }
         } else healTimer -= diff;
 
         if(holysmiteTimer < diff)
         {
             DoCast(m_creature->getVictim(), SOLARIUM_SMITE);
-            holysmiteTimer = 4000;
+            holysmiteTimer = urand(4000, 12000);
         } else holysmiteTimer -= diff;
 
         if (aoesilenceTimer < diff)
         {
             DoCast(m_creature->getVictim(), SOLARIUM_SILENCE);
-            aoesilenceTimer = 13000;
+            aoesilenceTimer = urand(6000, 12000);
         } else aoesilenceTimer -= diff;
 
         DoMeleeAttackIfReady();

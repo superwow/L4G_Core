@@ -371,7 +371,9 @@ void ScriptedAI::CastNextSpellIfAnyAndReady(uint32 diff)
 
             if (tempU && tempU->IsInWorld() && tempU->isAlive() && tempU->IsInMap(m_creature))
                 if (temp.spellId)
-                {
+                {					
+					//Unit* target = m_creature->GetUnit(temp.targetGUID);
+					//m_creature->SetInFront(target);
                     if(temp.setAsTarget && !m_creature->hasIgnoreVictimSelection())
                         m_creature->SetSelection(temp.targetGUID);
                     if(temp.hasCustomValues)
@@ -437,11 +439,12 @@ void ScriptedAI::CastNextSpellIfAnyAndReady(uint32 diff)
                             return;
                         }
                 }
-
+								
                 if (victim && !m_creature->hasIgnoreVictimSelection())
                 {
                     m_creature->SetSelection(victim->GetGUID());    // for autocast always target actual victim
-                    m_creature->CastSpell(victim, autocastId, false);
+					m_creature->SetInFront(victim);
+					m_creature->CastSpell(victim, autocastId, false);
                 }
 
                 autocastTimer = autocastTimerDef;
@@ -1074,6 +1077,34 @@ void ScriptedAI::DoSpecialThings(uint32 diff, SpecialThing flags, float range, f
     }
     else
         m_specialThingTimer -= diff;
+}
+
+void ScriptedAI::ServerFirst(Unit *killer)
+{
+    Player* player = NULL;
+    if (killer)
+    {
+        switch(killer->GetTypeId())
+        {
+            case TYPEID_UNIT:
+                if (((Creature*) killer)->isPet() && ((Pet*) killer)->GetOwner()->GetTypeId() == TYPEID_PLAYER)
+                {
+                    player = (Player*) ((Pet*) killer)->GetOwner();
+                }
+                break;
+            case TYPEID_PLAYER:
+                player = (Player*) killer;
+                break;
+            default:
+                return;
+        }
+    }
+
+    if (player && !player->isGameMaster())
+    {
+        player->CheckAndAnnounceServerFirst(m_creature);
+    }
+        
 }
 
 BossAI::BossAI(Creature *c, uint32 id) : ScriptedAI(c),

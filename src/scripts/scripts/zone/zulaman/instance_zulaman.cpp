@@ -51,6 +51,10 @@ struct instance_zulaman : public ScriptedInstance
     uint64 HexLordExitGateGUID;
     uint64 ZulJinDoorGUID;
 
+    uint64 AkilzonFlameGUID;
+    uint64 NalorakkFlameGUID;
+    uint64 JanalaiFlameGUID;
+    uint64 HalazziFlameGUID;
 
     uint64 HarrisonGUID;
     uint64 AkilzonGUID;
@@ -83,6 +87,11 @@ struct instance_zulaman : public ScriptedInstance
         HexLordEntranceGateGUID= 0;
         HexLordExitGateGUID = 0;
         ZulJinDoorGUID= 0;
+
+        AkilzonFlameGUID = 0;
+        NalorakkFlameGUID = 0;
+        JanalaiFlameGUID = 0;
+        HalazziFlameGUID = 0;
 
         AkilzonGUID = 0;
         ZulJinGUID = 0;
@@ -215,6 +224,7 @@ struct instance_zulaman : public ScriptedInstance
             HalazziEntranceDoorGUID  = go->GetGUID();
             go->SetGoState(GO_STATE_ACTIVE);
             break;
+
         case 186305:
             HexLordEntranceGateGUID = go->GetGUID();
             break;
@@ -228,6 +238,18 @@ struct instance_zulaman : public ScriptedInstance
         case 186859:
             ZulJinDoorGUID  = go->GetGUID();
             go->SetGoState(GO_STATE_ACTIVE);
+            break;
+        case 187035:
+            AkilzonFlameGUID = go->GetGUID();
+            break;
+        case 186860:
+            NalorakkFlameGUID = go->GetGUID();
+            break;
+        case 187036:
+            JanalaiFlameGUID = go->GetGUID();
+            break;
+        case 187037:
+            HalazziFlameGUID = go->GetGUID();
             break;
         case 187021:
         case 186648:
@@ -356,27 +378,34 @@ struct instance_zulaman : public ScriptedInstance
                 {
                     if(QuestMinute)
                     {
-                        QuestMinute += 15;
-                        UpdateWorldState(3106, QuestMinute);
-                    }
-                    BossJustKilled(0);
-                }
-            }
-            break;
-        case DATA_AKILZONEVENT:
-            HandleGameObject(AkilzonDoorGUID, data != IN_PROGRESS);
-            if (Encounters[2] != DONE)
-            {
-                Encounters[2] = data;
-                if(data == DONE)
-                {
-                    if(QuestMinute)
-                    {
                         QuestMinute += 10;
                         UpdateWorldState(3106, QuestMinute);
                     }
-                    BossJustKilled(1);
+                    BossJustKilled(0);
+                    HandleGameObject(NalorakkFlameGUID, true);
+                }   
+            }
+            break;
+        case DATA_AKILZONEVENT:
+            Encounters[2] = data;
+            if (Encounters[2] != DONE)
+            {
+                if (data == IN_PROGRESS)
+                    HandleGameObject(AkilzonDoorGUID, false);
+                else if (data == NOT_STARTED)
+                    HandleGameObject(AkilzonDoorGUID, true);
+            }
+            else if (Encounters[2] == DONE)
+            if (data == DONE)
+            {
+                if (QuestMinute)
+                {
+                    QuestMinute += 10;
+                    UpdateWorldState(3106, QuestMinute);
                 }
+                HandleGameObject(AkilzonDoorGUID, true);
+                HandleGameObject(AkilzonFlameGUID, true);
+                BossJustKilled(1);
             }
             break;
         case DATA_JANALAIEVENT:
@@ -384,7 +413,10 @@ struct instance_zulaman : public ScriptedInstance
             {
                 Encounters[3] = data;
                 if(data == DONE)
+                {
                     BossJustKilled(2);
+                    HandleGameObject(JanalaiFlameGUID, true);
+                }
             }
             break;
         case DATA_HALAZZIEVENT:
@@ -396,6 +428,7 @@ struct instance_zulaman : public ScriptedInstance
                 {
                     BossJustKilled(3);
                     HandleGameObject(HalazziExitDoorGUID, true);
+                    HandleGameObject(HalazziFlameGUID, true);
                 }
             }
             break;
@@ -414,10 +447,17 @@ struct instance_zulaman : public ScriptedInstance
                 CheckInstanceStatus();
             break;
         case DATA_ZULJINEVENT:
+            Encounters[6] = data;
             if (Encounters[6] != DONE)
-                Encounters[6] = data;
-
-            HandleGameObject(ZulJinDoorGUID, data != IN_PROGRESS);
+            {
+                if (data == IN_PROGRESS)
+                    HandleGameObject(ZulJinDoorGUID, false);
+                else if (data == NOT_STARTED)
+                    HandleGameObject(ZulJinDoorGUID, true);
+            }
+            else if (Encounters[6] == DONE)
+                if (data == DONE)
+                    HandleGameObject(ZulJinDoorGUID, true);
             break;
         case DATA_CHESTLOOTED:
             ChestLooted++;

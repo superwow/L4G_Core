@@ -434,7 +434,11 @@ void Map::BroadcastPacketExcept(WorldObject* sender, WorldPacket* msg, Player* e
 
 bool Map::loaded(const GridPair &p) const
 {
-    return (getNGrid(p.x_coord, p.y_coord) && isGridObjectDataLoaded(p.x_coord, p.y_coord));
+    if (NGridType* grid_type = getNGrid(p.x_coord, p.y_coord))
+    {
+        return grid_type->isGridObjectDataLoaded();
+    }
+    return false;
 }
 
 void Map::Update(const uint32 &t_diff)
@@ -1205,10 +1209,16 @@ void Map::AddToActive(WorldObject* obj)
 
 void Map::RemoveFromActive(WorldObject* obj)
 {
+    if (!obj)
+        return;
+
     // Map::Update for active object in proccess
     if (m_activeNonPlayersIter != m_activeNonPlayers.end())
     {
         ActiveNonPlayers::iterator itr = m_activeNonPlayers.find(obj);
+        if (itr == m_activeNonPlayers.end())
+            return;
+
         if (itr == m_activeNonPlayersIter)
             ++m_activeNonPlayersIter;
 
@@ -1909,13 +1919,24 @@ void Map::ScriptsProcess()
                     break;
                 }
 
-                if (!sWaypointMgr.GetPath(step.script->datalong))
+                if (!sWaypointMgr.GetPath(step.script->datalong) && step.script->datalong != 0)
                 {
                     sLog.outLog(LOG_DEFAULT, "ERROR: SCRIPT_COMMAND_START_MOVE source mover has an invallid path, skipping.", step.script->datalong2);
                     break;
                 }
-
-                dynamic_cast<Unit*>(source)->GetMotionMaster()->MovePath(step.script->datalong, step.script->datalong2);
+                // If path ID is 0, stop movement.
+                if (step.script->datalong == 0)
+                {
+                    dynamic_cast<Unit*>(source)->GetMotionMaster()->MoveIdle();
+                    break;
+                }
+                else
+                {
+                    // Stop moving on old path and load the new one
+                    dynamic_cast<Unit*>(source)->GetMotionMaster()->MovementExpired();
+                    dynamic_cast<Unit*>(source)->GetMotionMaster()->MovePath(step.script->datalong, step.script->datalong2);
+                    break;
+                }
                 break;
             }
 
@@ -2068,6 +2089,96 @@ void Map::ScriptsProcess()
                 break;
             }
 
+			case SCRIPT_COMMAND_DESPAWN_SELF:
+				{
+					// Source must be Creature. 
+					if (!source)
+					{
+						sLog.outLog(LOG_DEFAULT, "ERROR: SCRIPT_DESPAWN_SELF call for NULL creature.");
+						break;
+					}
+
+					if (source->GetTypeId()!=TYPEID_UNIT)
+					{
+						sLog.outLog(LOG_DEFAULT, "ERROR: SCRIPT_DESPAWN_SELF call for non-creature (TypeId: %u), skipping.",source->GetTypeId());
+						break;
+					}
+					((Creature*)source)->ForcedDespawn(step.script->datalong);
+					break;
+				}
+
+			case SCRIPT_COMMAND_VISIBILITY_SET:
+				{
+					// Source must be Creature. 
+					if (!source)
+					{
+						sLog.outLog(LOG_DEFAULT, "ERROR: SCRIPT_COMMAND_VISIBILITY_SET call for NULL creature.");
+						break;
+					}
+
+					if (source->GetTypeId()!=TYPEID_UNIT)
+					{
+						sLog.outLog(LOG_DEFAULT, "ERROR: SCRIPT_COMMAND_VISIBILITY_SET call for non-creature (TypeId: %u), skipping.",source->GetTypeId());
+						break;
+					}
+					((Creature*)source)->SetVisibility(UnitVisibility(step.script->datalong));
+					break;
+				}
+
+			case SCRIPT_COMMAND_EQUIP:
+				{
+					// Source must be Creature.
+					if (!source)
+					{
+						sLog.outLog(LOG_DEFAULT, "ERROR: SCRIPT_COMMAND_EQUIP call for NULL creature.");
+						break;
+					}
+
+					if (source->GetTypeId()!=TYPEID_UNIT)
+					{
+						sLog.outLog(LOG_DEFAULT, "ERROR: SCRIPT_COMMAND_EQUIP call for non-creature (TypeId: %u), skipping.",source->GetTypeId());
+						break;
+					}
+					((Creature*)source)->LoadEquipment(step.script->datalong);
+				}
+				break;
+
+			case SCRIPT_COMMAND_MODEL:
+				{
+					// Source must be Creature.
+					if (!source)
+					{
+						sLog.outLog(LOG_DEFAULT, "ERROR: SCRIPT_COMMAND_MODEL call for NULL creature.");
+						break;
+					}
+
+					if (source->GetTypeId()!=TYPEID_UNIT)
+					{
+						sLog.outLog(LOG_DEFAULT, "ERROR: SCRIPT_COMMAND_MODEL call for non-creature (TypeId: %u), skipping.",source->GetTypeId());
+						break;
+					}
+					((Creature*)source)->SetDisplayId(step.script->datalong);	
+					break;
+				}
+
+			case SCRIPT_COMMAND_ORIENTATION:
+				{
+					// Source must be Unit.
+					if (!source)
+					{
+						sLog.outLog(LOG_DEFAULT, "ERROR: SCRIPT_COMMAND_ORIENTATION call for NULL creature.");
+						break;
+					}
+
+					if (source->GetTypeId()!=TYPEID_UNIT)
+					{
+						sLog.outLog(LOG_DEFAULT, "ERROR: SCRIPT_COMMAND_ORIENTATION call for non-creature (TypeId: %u), skipping.",source->GetTypeId());
+						break;
+					}
+					dynamic_cast<Unit*>(source)->SetFacingTo(step.script->o);
+					break;
+				}
+
             default:
                 sLog.outLog(LOG_DEFAULT, "ERROR: Unknown script command %u called.",step.script->command);
                 break;
@@ -2194,6 +2305,9 @@ bool InstanceMap::Add(Player *player)
         // Dungeon only code
         if(IsDungeon())
         {
+            // increase current instances (hourly limit)
+            player->AddInstanceEnterTime(GetInstanceId(), time(NULL));
+
             // get or create an instance save for the map
             InstanceSave *mapSave = sInstanceSaveManager.GetInstanceSave(GetInstanceId());
             if(!mapSave)
@@ -3034,7 +3148,7 @@ void Map::ForcedUnload()
                     player->GetGUIDLow());
                 player->TeleportToHomebind();
             }
-            player->SetSemaphoreTeleport(false);
+            player->SetSemaphoreTeleportFar(false);
         }
 
         switch (sWorld.getConfig(CONFIG_VMSS_MAPFREEMETHOD))
@@ -3080,15 +3194,17 @@ void Map::ForcedUnload()
 
 float Map::GetVisibilityDistance(WorldObject* obj, Player* invoker) const
 {
+    if (!obj)
+        return DEFAULT_VISIBILITY_DISTANCE;
+
     if (invoker && invoker->getWatchingCinematic() != 0)
         return MAX_VISIBILITY_DISTANCE;
 
-    float dist = DEFAULT_VISIBILITY_DISTANCE;
-
-    if (m_TerrainData)
-        dist = m_TerrainData->GetVisibilityDistance();
-
-    if (obj)
+    if (m_TerrainData == nullptr)
+         return DEFAULT_VISIBILITY_DISTANCE;
+    
+    float dist = m_TerrainData->GetVisibilityDistance();
+    if (obj != nullptr)
     {
         if (obj->GetObjectGuid().IsGameObject())
             return (dist + obj->ToGameObject()->GetDeterminativeSize());    // or maybe should be GetMaxVisibleDistanceForObject instead m_VisibleDistance ?

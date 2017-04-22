@@ -577,9 +577,10 @@ struct MapEntry
     bool IsMountAllowed() const
     {
         return !IsDungeon() ||
-            MapID==209 || MapID==269 || MapID==309 ||       // TanarisInstance, CavernsOfTime, Zul'gurub
-            MapID==509 || MapID==534 || MapID==560 ||       // AhnQiraj, HyjalPast, HillsbradPast
-            MapID==568 || MapID==580;                       // ZulAman, Sunwell Plateau
+            MapID== 36 ||                               // Dead Mines
+            MapID==209 || MapID==269 || MapID==309 ||   // TanarisInstance, CavernsOfTime, Zul'gurub
+            MapID==509 || MapID==534 || MapID==560 ||   // AhnQiraj, HyjalPast, HillsbradPast
+            MapID==564 || MapID==568 || MapID==580;     // Black Temple, ZulAman, Sunwell Plateau
     }
 
     bool IsContinent() const
@@ -722,11 +723,11 @@ struct SpellEntry
     int32     EquippedItemSubClassMask;                     // 63 (mask)
     int32     EquippedItemInventoryTypeMask;                // 64 (mask)
     uint32    Effect[3];                                    // 65-67
-    int32     EffectDieSides[3];                            // 68-70
+    int32     EffectDieSides[3];                            // 68-70 variable damage
     uint32    EffectBaseDice[3];                            // 71-73
     float     EffectDicePerLevel[3];                        // 74-76
     float     EffectRealPointsPerLevel[3];                  // 77-79
-    int32     EffectBasePoints[3];                          // 80-82 (don't must be used in spell/auras explicitly, must be used cached Spell::m_currentBasePoints)
+    int32     EffectBasePoints[3];                          // 80-82 absolute damage (don't must be used in spell/auras explicitly, must be used cached Spell::m_currentBasePoints)
     uint32    EffectMechanic[3];                            // 83-85
     uint32    EffectImplicitTargetA[3];                     // 86-88
     uint32    EffectImplicitTargetB[3];                     // 89-91

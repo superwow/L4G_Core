@@ -24,6 +24,8 @@ EndScriptData */
 #include "precompiled.h"
 #include "def_serpent_shrine.h"
 
+#define AGGRO_RANGE                     35
+
 #define SAY_AGGRO                   -1548030
 #define SAY_SUMMON1                 -1548031
 #define SAY_SUMMON2                 -1548032
@@ -37,6 +39,7 @@ EndScriptData */
 #define EMOTE_EARTHQUAKE            -1548040
 #define EMOTE_WATERY_GLOBULES       -1548041
 
+#define SPELL_THRASH_PASSIVE        19818
 #define SPELL_TIDAL_WAVE            37730
 #define SPELL_WATERY_GRAVE          38049
 #define SPELL_EARTHQUAKE            37764
@@ -80,6 +83,7 @@ struct boss_morogrim_tidewalkerAI : public ScriptedAI
 {
     boss_morogrim_tidewalkerAI(Creature *c) : ScriptedAI(c)
     {
+        m_creature->SetAggroRange(AGGRO_RANGE);
         pInstance = (c->GetInstanceData());
         m_creature->GetPosition(wLoc);
     }
@@ -99,14 +103,15 @@ struct boss_morogrim_tidewalkerAI : public ScriptedAI
     void Reset()
     {
         TidalWave_Timer = 10000;
-        WateryGrave_Timer = 30000;
-        Earthquake_Timer = 40000;
+        WateryGrave_Timer = 20000;
+        Earthquake_Timer = 45000;
         WateryGlobules_Timer = 0;
 
         Earthquake = false;
         Phase2 = false;
+        m_creature->CastSpell(m_creature, SPELL_THRASH_PASSIVE, true);
 
-        pInstance->SetData(DATA_MOROGRIMTIDEWALKEREVENT, NOT_STARTED);
+        pInstance->SetData(DATA_MOROGRIM_EVENT, NOT_STARTED);
     }
 
     void KilledUnit(Unit *victim)
@@ -114,16 +119,18 @@ struct boss_morogrim_tidewalkerAI : public ScriptedAI
         DoScriptText(RAND(SAY_SLAY1, SAY_SLAY2, SAY_SLAY3), m_creature);
     }
 
-    void JustDied(Unit *victim)
+    void JustDied(Unit *killer)
     {
+        ServerFirst(killer);
+
         DoScriptText(SAY_DEATH, m_creature);
-        pInstance->SetData(DATA_MOROGRIMTIDEWALKEREVENT, DONE);
+        pInstance->SetData(DATA_MOROGRIM_EVENT, DONE);
     }
 
     void EnterCombat(Unit *who)
     {
         DoScriptText(SAY_AGGRO, m_creature);
-        pInstance->SetData(DATA_MOROGRIMTIDEWALKEREVENT, IN_PROGRESS);
+        pInstance->SetData(DATA_MOROGRIM_EVENT, IN_PROGRESS);
     }
 
     void UpdateAI(const uint32 diff)
@@ -157,10 +164,9 @@ struct boss_morogrim_tidewalkerAI : public ScriptedAI
                         Murloc->setActive(true);
                         Murloc->AI()->AttackStart(target);
                     }
-                }
-
+                }                
                 Earthquake = false;
-                Earthquake_Timer = urand(40000, 45000);
+                Earthquake_Timer = urand(35000, 50000);
             }
         }
         else
@@ -186,11 +192,12 @@ struct boss_morogrim_tidewalkerAI : public ScriptedAI
 
                 int i = 0;
                 for (std::list<Unit*>::const_iterator itr = tmpList.begin(); itr != tmpList.end(); ++itr)
+                {
                     (*itr)->CastSpell(*itr, wateryGraves[i++], true);
-
-                DoScriptText(RAND(SAY_SUMMON_BUBL1, SAY_SUMMON_BUBL2), m_creature);
+                }
+                             
                 DoScriptText(EMOTE_WATERY_GRAVE, m_creature);
-                WateryGrave_Timer = 30000;
+                WateryGrave_Timer = 28500;
             }
             else
                 WateryGrave_Timer -= diff;
@@ -209,10 +216,13 @@ struct boss_morogrim_tidewalkerAI : public ScriptedAI
 
                 int i = 0;
                 for (std::list<Unit*>::const_iterator itr = tmpList.begin(); itr != tmpList.end(); ++itr)
-                    (*itr)->CastSpell((*itr), summonGlobules[i++], true);
-
-                DoScriptText(EMOTE_WATERY_GLOBULES, m_creature);
-                WateryGlobules_Timer = 25000;
+                 {                   
+                    (*itr)->CastSpell((*itr), summonGlobules[i], true);                    
+                    i++;
+                }
+                DoScriptText(EMOTE_WATERY_GLOBULES, m_creature);              
+                DoScriptText(RAND(SAY_SUMMON_BUBL1, SAY_SUMMON_BUBL2), m_creature);                
+                WateryGlobules_Timer = 40000;
             }
             else
                 WateryGlobules_Timer -= diff;
@@ -235,6 +245,7 @@ struct mob_water_globuleAI : public ScriptedAI
 
     uint32 Check_Timer;
     WorldLocation wLoc;
+    bool Start;
 
     void Reset()
     {
@@ -243,25 +254,21 @@ struct mob_water_globuleAI : public ScriptedAI
         m_creature->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE);
         m_creature->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE);
         m_creature->setFaction(14);
-    }
-
-    void EnterCombat(Unit *who) {}
-
-    void JustSummoned(Creature * summoner)
-    {
-        DoZoneInCombat(200.0f);
-
-        Unit * tmpUnit = SelectUnit(SELECT_TARGET_RANDOM, 0, 0, true);
-
-        if (!tmpUnit)
-            tmpUnit = summoner;
-
-        m_creature->AddThreat(tmpUnit, 20000.0f);
-        AttackStart(tmpUnit);
-    }
+        Start = true;
+    }    
 
     void UpdateAI(const uint32 diff)
     {
+        if (Start) {
+            DoZoneInCombat(200.0f);            
+            Unit * tmpUnit = SelectUnit(SELECT_TARGET_RANDOM, 0, 200.0f, true);
+            if (tmpUnit) {
+                m_creature->AddThreat(tmpUnit, 20000.0f);
+                AttackStart(tmpUnit);
+            }
+            
+            Start = false;
+        }
         //Return since we have no target
         if (!UpdateVictim())
             return;

@@ -133,6 +133,7 @@ enum WorldConfigs
     CONFIG_MAX_PLAYER_LEVEL,
     CONFIG_START_PLAYER_LEVEL,
     CONFIG_START_PLAYER_MONEY,
+    CONFIG_MIN_PLAYER_EXPLORE_LEVEL,
     CONFIG_MAX_HONOR_POINTS,
     CONFIG_START_HONOR_POINTS,
     CONFIG_MAX_ARENA_POINTS,
@@ -182,6 +183,17 @@ enum WorldConfigs
     CONFIG_CHATFLOOD_MESSAGE_COUNT,
     CONFIG_CHATFLOOD_MESSAGE_DELAY,
     CONFIG_CHATFLOOD_MUTE_TIME,
+    CONFIG_CHATFLOOD_CAPS_LENGTH,
+    CONFIG_CHATFLOOD_CAPS_PCT,
+    CONFIG_CHATFLOOD_REPEAT_MESSAGES,
+    CONFIG_CHATFLOOD_REPEAT_TIMEOUT,
+    CONFIG_CHATFLOOD_REPEAT_MUTE,
+    CONFIG_CHATFLOOD_CHATTYPE,
+    CONFIG_CHATFLOOD_EMOTE_COUNT,
+    CONFIG_CHATFLOOD_EMOTE_DELAY,
+    CONFIG_SPAMREPORT_TICKETS,
+    CONFIG_SPAMREPORT_TICKET_THRESHOLD_CHAT,
+    CONFIG_SPAMREPORT_TICKET_THRESHOLD_MAIL,
     CONFIG_EVENT_ANNOUNCE,
     CONFIG_CREATURE_FAMILY_FLEE_ASSISTANCE_RADIUS,
     CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS,
@@ -295,6 +307,7 @@ enum WorldConfigs
     CONFIG_VMSS_ENABLE,
 
     CONFIG_ENABLE_CUSTOM_XP_RATES,
+    CONFIG_GET_CUSTOM_XP_RATE_LEVEL,
     CONFIG_XP_RATE_MODIFY_ITEM_ENTRY,
     CONFIG_XP_RATE_MODIFY_ITEM_PCT,
 
@@ -320,6 +333,8 @@ enum WorldConfigs
 
     CONFIG_TARGET_POS_RECALCULATION_RANGE,
     CONFIG_TARGET_POS_RECHECK_TIMER,
+
+    CONFIG_HEALTH_IN_PERCENTS,
 
     CONFIG_PRIVATE_CHANNEL_LIMIT,
 
@@ -365,6 +380,7 @@ enum Rates
     RATE_XP_QUEST,
     RATE_XP_EXPLORE,
     RATE_XP_PAST_70,
+    RATE_CUSTOM_XP_VALUE,
     RATE_REPUTATION_GAIN,
     RATE_REPUTATION_LOWLEVEL_KILL,
     RATE_REPUTATION_LOWLEVEL_QUEST,
@@ -469,11 +485,15 @@ enum RealmZone
 #define SCRIPT_COMMAND_REMOVE_AURA          14              // source (datalong2!=0) or target (datalong==0) unit, datalong = spell_id
 #define SCRIPT_COMMAND_CAST_SPELL           15              // source (datalong2!=0) or target (datalong==0) unit, datalong = spell_id
 #define SCRIPT_COMMAND_LOAD_PATH            16              // source = unit, path = datalong, repeatable datalong2
-#define SCRIPT_COMMAND_CALLSCRIPT_TO_UNIT   17              // datalong scriptid, lowguid datalong2, dataint table
+#define SCRIPT_COMMAND_CALLSCRIPT_TO_UNIT   17              // source = WorldObject (if present used as a search center), datalong = unit lowguid, datalong2 = script id, dataint = script table to use
 #define SCRIPT_COMMAND_PLAY_SOUND           18              // source = any object, target=any/player, datalong (sound_id), datalong2 (bitmask: 0/1=anyone/target, 0/2=with distance dependent, so 1|2 = 3 is target with distance dependent)
-#define SCRIPT_COMMAND_KILL                 19              // datalong removecorpse
+#define SCRIPT_COMMAND_KILL                 19              // datalong = (0=source kills source, 1=target kills source, 2=source kills target), dataint = 1 to remove corpse.
 #define SCRIPT_COMMAND_SET_INST_DATA        20              // source = any, datalong = type, datalong2 = data
-
+#define SCRIPT_COMMAND_DESPAWN_SELF         21              // target/source = Creature, datalong = despawn delay
+#define SCRIPT_COMMAND_VISIBILITY_SET       22              // source = unit, datalong = Visibility State (VISIBILITY_OFF = 0, VISIBILITY_ON = 1, VISIBILITY_GROUP_STEALTH = 2, VISIBILITY_RESPAWN = 5)
+#define SCRIPT_COMMAND_ORIENTATION          30              // source = Unit. o = orientation
+#define SCRIPT_COMMAND_EQUIP                31              // soucre = Creature, datalong = equipment id
+#define SCRIPT_COMMAND_MODEL                32              // source = Creature, datalong = model id
 
 /// Storage class for commands issued for delayed execution
 struct CliCommandHolder
@@ -631,6 +651,8 @@ class LOOKING4GROUP_EXPORT World
         /// Get the maximum number of parallel sessions on the server since last reboot
         uint32 GetMaxQueuedSessionCount() const { return m_maxQueuedSessionCount; }
         uint32 GetMaxActiveSessionCount() const { return m_maxActiveSessionCount; }
+        uint32 GetMaxAllianceSessionCount() const { return m_maxAllianceSessionCount; }
+        uint32 GetMaxHordeSessionCount() const { return m_maxHordeSessionCount; }
         Player* FindPlayerInZone(uint32 zone);
 
         Weather* FindWeather(uint32 id) const;
@@ -745,6 +767,9 @@ class LOOKING4GROUP_EXPORT World
             else
                 return 0;
         }
+
+        /// Get configuration about force-loaded maps
+        std::set<uint32>* getConfigForceLoadMapIds() const { return m_configForceLoadMapIds; }
 
         /// Are we on a "Player versus Player" server?
         bool IsPvPRealm() { return (getConfig(CONFIG_GAME_TYPE) == REALM_TYPE_PVP || getConfig(CONFIG_GAME_TYPE) == REALM_TYPE_RPPVP || getConfig(CONFIG_GAME_TYPE) == REALM_TYPE_FFA_PVP); }
@@ -877,6 +902,8 @@ class LOOKING4GROUP_EXPORT World
         DisconnectMap m_disconnects;
         uint32 m_maxActiveSessionCount;
         uint32 m_maxQueuedSessionCount;
+        uint32 m_maxAllianceSessionCount;
+        uint32 m_maxHordeSessionCount;
 
         std::string m_newCharString;
 
@@ -927,6 +954,9 @@ class LOOKING4GROUP_EXPORT World
         //used versions
         std::string m_DBVersion;
         std::string m_ScriptsVersion;
+
+        // List of Maps that should be force-loaded on startup
+        std::set<uint32>* m_configForceLoadMapIds;
 };
 
 extern uint32 realmID;

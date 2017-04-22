@@ -115,23 +115,35 @@ CreatureAI* GetAI_npc_forest_frog(Creature *_Creature)
 #define GOSSIP_TANZAR_1 "You're welcome... Now tell us what's going on here!"
 #define GOSSIP_TANZAR_2 "What can you tell us about Budd?"
 
+enum Gameobjects
+{
+    GO_LOOT_BOX                     = 186622,
+    GO_EXPLOSION_CHARGE             = 183410, // probably wrong go, but looks ok
+    GO_ASHLI_VASE                   = 186671,
+    GO_GOLD_COINS1                  = 186633,
+    GO_GOLD_COINS2                  = 186634,
+};
 
-#define GO_LOOT_BOX             186622
-#define GO_EXPLOSION_CHARGE     183410  // probably wrong go, but looks ok
-#define GO_ASHLI_VASE           186671
+enum TimeEventSpells
+{
+    SPELL_SMASH                     = 18944, // most probably wrong spell, but has cool visual
+    SPELL_EXPLOSION                 = 43418, // also not sure about this
+    SPELL_ASHLI_FIREBALL_COSMETIC   = 43515,
+    SPELL_ASHLI_FIREBALL1           = 43520,
+    SPELL_ASHLI_FIREBALL2           = 43525
+};
 
-#define SPELL_SMASH             18944   // most probably wrong spell, but has cool visual
-#define SPELL_EXPLOSION         43418   // also not sure about this
-#define SPELL_ASHLI_FIREBALL    43525
-
-#define YELL_ASHLI_KILL         -1800518
-#define YELL_ASHLI_FREED        -1800519
-#define YELL_ASHLI_FREE_ME1     -1800520
-#define YELL_ASHLI_FREE_ME2     -1800521
-#define YELL_ASHLI_FREE_ME3     -1800522
-#define YELL_ASHLI_VASE1        -1800523
-#define YELL_ASHLI_VASE2        -1800524
-#define YELL_ASHLI_VASE3        -1800525
+enum TimeEventText
+{
+    YELL_ASHLI_KILL             = -1800518,
+    YELL_ASHLI_FREED            = -1800519,
+    YELL_ASHLI_FREE_ME1         = -1800520,
+    YELL_ASHLI_FREE_ME2         = -1800521,
+    YELL_ASHLI_FREE_ME3         = -1800522,
+    YELL_ASHLI_VASE1            = -1800523,
+    YELL_ASHLI_VASE2            = -1800524,
+    YELL_ASHLI_VASE3            = -1800525
+};
 
 struct npc_hostageAI : public ScriptedAI
 {
@@ -203,7 +215,7 @@ struct npc_tanzarAI : public npc_hostageAI
 {
     npc_tanzarAI(Creature *c) : npc_hostageAI(c)
     {
-        dist = 0.9;
+        dist = 1.5;
         angle = 3.1415;
     }
 
@@ -320,10 +332,10 @@ CreatureAI* GetAI_npc_kraz(Creature *_Creature)
 float AshliWP[][3] = {
     {409, 1146, 5},
     {360, 1090, 7},
-    {334, 1089, 6},
-    {332, 1145, 6},
+    {346, 1088, 7},
+    {343, 1129, 6},
     {385, 1089, 6},
-    {403, 1089, 6},
+    {405, 1087, 7}, 
     {374, 1087, 7}
 };
 
@@ -332,9 +344,6 @@ struct npc_ashliAI : public ScriptedAI
     npc_ashliAI(Creature *c) : ScriptedAI(c)
     {
         pInstance = (ScriptedInstance*)c->GetInstanceData();
-        //SpellEntry *TempSpell = (SpellEntry*)GetSpellStore()->LookupEntry(SPELL_ASHLI_FIREBALL);
-        //if(TempSpell)
-        //    TempSpell->EffectImplicitTargetA[0] = TARGET_GAMEOBJECT;
     }
 
     ScriptedInstance *pInstance;
@@ -376,7 +385,7 @@ struct npc_ashliAI : public ScriptedAI
 
         Fire = true;
         targets.clear();
-        std::list<Creature*> t = FindAllCreaturesWithEntry(23746, 20);
+        std::list<Creature*> t = FindAllCreaturesWithEntry(23746, 25);
         for(std::list<Creature*>::iterator i = t.begin(); i != t.end(); ++i)
             targets.push_back((*i)->GetGUID());
 
@@ -384,7 +393,7 @@ struct npc_ashliAI : public ScriptedAI
 
     void SpellHitTarget(Unit *target, const SpellEntry *entry)
     {
-        GameObject *go = FindGameObject(GO_ASHLI_VASE, 5, target);
+        GameObject *go = FindGameObject(GO_ASHLI_VASE, 25, target);
         if(!YellAshliVaseDone[1] && MovePoint == 3)
         {
             DoScriptText(YELL_ASHLI_VASE2, me);
@@ -442,7 +451,7 @@ struct npc_ashliAI : public ScriptedAI
             }
             if(target)
             {
-                me->CastSpell(target, SPELL_ASHLI_FIREBALL, false);
+                me->CastSpell(target, SPELL_ASHLI_FIREBALL1, false);
                 if(!YellAshliVaseDone[0] && MovePoint == 1)
                 {
                     DoScriptText(YELL_ASHLI_VASE1, me);
@@ -636,15 +645,15 @@ bool GossipSelect_npc_ashli(Player* player, Creature* _Creature, uint32 sender, 
 
 enum
 {
-SAY_START = -1568079,
-SAY_AT_GONG = -1568080,
-SAY_OPENING_ENTRANCE = -1568081,
-SAY_OPEN_GATE = -1568082,
+    SAY_START               = -1568079,
+    SAY_AT_GONG             = -1568080,
+    SAY_OPENING_ENTRANCE    = -1568081,
+    SAY_OPEN_GATE           = -1568082,
 
-SPELL_BANGING_THE_GONG = 45222,
+    SPELL_BANGING_THE_GONG  = 45222,
 
-SOUND_GONG = 12204,
-SOUND_CELEBRATE = 12135
+    SOUND_GONG              = 12204,
+    SOUND_CELEBRATE         = 12135
 };
 
 #define GOSSIP_ITEM_BEGIN "Thanks for the concern, but we intend to explore Zul'Aman."
@@ -894,17 +903,20 @@ CreatureAI* GetAI_npc_zulaman_door_trigger(Creature *_Creature)
 # Akilzon Gauntlet event
 #######################*/
 
-#define AKILZON_GAUNTLET_NOT_STARTED        0
-#define AKILZON_GAUNTLET_IN_PROGRESS        10
-#define AKILZON_GAUNTLET_TEMPEST_ENGAGED    11
-#define AKILZON_GAUNTLET_TEMPEST_DEAD       12
+enum AkilzonGauntletEvent
+{
+    AKILZON_GAUNTLET_NOT_STARTED        = 0,
+    AKILZON_GAUNTLET_IN_PROGRESS        = 10,
+    AKILZON_GAUNTLET_TEMPEST_ENGAGED    = 11,
+    AKILZON_GAUNTLET_TEMPEST_DEAD       = 12,
 
-#define NPC_AMANISHI_WARRIOR        24225
-#define NPC_AMANISHI_EAGLE          24159
-#define SPELL_TALON                 43517
-#define SPELL_CHARGE                43519
-#define SPELL_KICK                  43518
-#define SAY_GAUNTLET_START          -1568025
+    NPC_AMANISHI_WARRIOR            = 24225,
+    NPC_AMANISHI_EAGLE              = 24159,
+    SPELL_TALON                     = 43517,
+    SPELL_CHARGE                    = 43519,
+    SPELL_KICK                      = 43518,
+    SAY_GAUNTLET_START           = -1568025
+};
 
 int32 GauntletWP[][3] =
 {
@@ -935,8 +947,6 @@ struct npc_amanishi_lookoutAI : public ScriptedAI
 
     void Reset()
     {
-        //me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE);
-        me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE);
         me->SetReactState(REACT_AGGRESSIVE);
         me->SetVisibility(VISIBILITY_ON);
         me->setActive(true);
@@ -944,6 +954,7 @@ struct npc_amanishi_lookoutAI : public ScriptedAI
         warriorsTimer = 40000;
         eaglesTimer = 1000;
         Move = false;
+        Summons.DespawnAll();
 
         if(pInstance)
             pInstance->SetData(DATA_AKILZONGAUNTLET, AKILZON_GAUNTLET_NOT_STARTED);
@@ -951,15 +962,12 @@ struct npc_amanishi_lookoutAI : public ScriptedAI
 
     void StartEvent()
     {
+        me->SetUnitMovementFlags(0);
         me->GetMotionMaster()->MovePoint(0, 226, 1461, 26);
         EventStarted = true;
         DoZoneInCombat();
         if(pInstance && pInstance->GetData(DATA_AKILZONEVENT) != DONE)
             DoGlobalScriptText(SAY_GAUNTLET_START, AKILZON, me->GetMap());
-    }
-
-    void EnterCombat(Unit *who)
-    {
     }
 
     void JustDied(Unit* Killer)
@@ -987,8 +995,6 @@ struct npc_amanishi_lookoutAI : public ScriptedAI
     {
         if(me->getVictim())
             return;
-       // if(EventStarted)
-       //     return;
 
         if (me->canStartAttack(who))
         {
@@ -1060,15 +1066,13 @@ struct npc_amanishi_lookoutAI : public ScriptedAI
 
         else if(pInstance && pInstance->GetData(DATA_AKILZONGAUNTLET) == AKILZON_GAUNTLET_TEMPEST_DEAD)
         {
-            Reset();
             me->Kill(me, false);
+            me->ForcedDespawn(0);
         }
 
         if(EventStarted && !UpdateVictim())
         {
-            EnterEvadeMode();
-            EventStarted = false;
-            Summons.DespawnAll();
+            Reset();
         }
     }
 };
@@ -1185,10 +1189,15 @@ CreatureAI* GetAI_npc_amani_eagle(Creature *_Creature)
     return ai;
 }
 
-#define YELL_SCOUT_AGGRO            -1811003
-#define SPELL_ALERT_DRUMS           42177
-#define SPELL_SUMMON_SENTRIES       42183
-#define MOB_SENTRY                  23587
+enum AmanishiScout
+{
+    YELL_SCOUT_AGGRO        = -1811003,
+    SPELL_ALERT_DRUMS       =    42177,
+    SPELL_SUMMON_SENTRIES1  =    42183,
+    SPELL_SUMMON_SENTRIES2  =    42182,
+    SPELL_SUMMON_SENTRIES3  =    42181,
+    MOB_SENTRY              =    23587
+};
 
 struct npc_amanishi_scoutAI : public ScriptedAI
 {
@@ -1203,6 +1212,7 @@ struct npc_amanishi_scoutAI : public ScriptedAI
     void Reset()
     {
         SummonTimer = 0;
+        me->GetMotionMaster()->Initialize();
     }
 
     void AttackStart(Unit *pWho)
@@ -1218,15 +1228,13 @@ struct npc_amanishi_scoutAI : public ScriptedAI
     void MovementInform(uint32 type, uint32 id)
     {
         if(type == POINT_MOTION_TYPE && id == 1)
-        {
-            //DoCast(me, SPELL_ALERT_DRUMS, false);
             SummonTimer = 1;
-        }
     }
 
     void EnterCombat(Unit *who)
     {
         DoScriptText(YELL_SCOUT_AGGRO, me);
+        me->SetWalk(false);
         Unit *drums = FindCreature(22515, 50, me);
         if(drums)
             me->GetMotionMaster()->MovePoint(1, drums->GetPositionX(), drums->GetPositionY(), drums->GetPositionZ());
@@ -1239,26 +1247,20 @@ struct npc_amanishi_scoutAI : public ScriptedAI
 
         if(SummonTimer)
         {
-            /*
-            Unit *drums = FindCreature(22515, 5, me);
-            if(drums)
-                me->GetMotionMaster()->MoveFollow(drums, 0, 0);
-*/
             if(SummonTimer <= diff)
             {
+                m_creature->GetMotionMaster()->Clear();
                 DoCast(me, SPELL_ALERT_DRUMS, false);
-                //DoCast(me, SPELL_SUMMON_SENTRIES, true);
-                //DoCast(me, SPELL_SUMMON_SENTRIES, true);
-                float x,y,z;
-                me->GetPosition(x, y, z);
-                me->SummonCreature(MOB_SENTRY, x+1, y+1, z, 0, TEMPSUMMON_TIMED_DESPAWN_OUT_OF_COMBAT, 10000);
-                me->SummonCreature(MOB_SENTRY, x-1, y-1, z, 0, TEMPSUMMON_TIMED_DESPAWN_OUT_OF_COMBAT, 10000);
-                SummonTimer = 5000;
+                DoCast(me, SPELL_SUMMON_SENTRIES1, false);
+                DoCast(me, SPELL_SUMMON_SENTRIES2, false);
+                if (urand(0, 100) < 25)
+                DoCast(me, SPELL_SUMMON_SENTRIES3, false);
+
+                SummonTimer = urand(2000, 3000);
             } else
                 SummonTimer -= diff;
         }
     }
-
 };
 
 CreatureAI* GetAI_npc_amanishi_scout(Creature *_Creature)

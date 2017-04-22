@@ -45,6 +45,8 @@ struct boss_doomwalkerAI : public ScriptedAI
     boss_doomwalkerAI(Creature *c) : ScriptedAI(c)
     {
         m_creature->GetPosition(wLoc);
+        // On script initialisation we want to make Doomwalker invisible in case he shouldn't spawn due to server crash/restart
+        m_creature->SetVisibility(VISIBILITY_OFF);
     }
 
     uint32 Chain_Timer;
@@ -53,6 +55,8 @@ struct boss_doomwalkerAI : public ScriptedAI
     uint32 Quake_Timer;
     uint32 Armor_Timer;
     uint32 Check_Timer;
+    uint32 Earthquake_Channel_Timer;
+    bool isEarthquake;
 
     WorldLocation wLoc;
 
@@ -65,26 +69,35 @@ struct boss_doomwalkerAI : public ScriptedAI
         Chain_Timer     = 10000 + rand()%20000;
         Quake_Timer     = 25000 + rand()%10000;
         Overrun_Timer   = 30000 + rand()%15000;
+        Earthquake_Channel_Timer = 0;
 
         InEnrage = false;
-
+        isEarthquake = false;
+        
         QueryResultAutoPtr resultWorldBossRespawn = QueryResultAutoPtr(NULL); 
         resultWorldBossRespawn = GameDataDatabase.PQuery("SELECT RespawnTime FROM worldboss_respawn WHERE BossEntry = %i", m_creature->GetEntry());
         if (resultWorldBossRespawn)
         {
             Field* fieldsWBR = resultWorldBossRespawn->Fetch();
-            uint64 last_time_killed = fieldsWBR[0].GetUInt64();
-            last_time_killed += 259200;
-            if (last_time_killed >= time(0))
+            uint64 respawn_time = fieldsWBR[0].GetUInt64();
+            if (respawn_time > time(0))
+            {
+                // If Doomwalker shouldn't be spawned then despawn him and make him invisible for any future attempted respawns
+                me->SetVisibility(VISIBILITY_OFF);
                 me->DisappearAndDie();
-        }
-        
+            } else {
+                // If Doomwalker should be spawned, make him visible
+                me->SetVisibility(VISIBILITY_ON);
+            }
+        }        
     }
 
     void KilledUnit(Unit* victim)
     {
         if(!victim->HasAura(SPELL_MARK_DEATH,0))
+        {
             m_creature->AddAura(SPELL_MARK_DEATH,victim);
+        }
 
         DoScriptText(RAND(SAY_SLAY_1, SAY_SLAY_2, SAY_SLAY_3), m_creature);
     }
@@ -92,7 +105,8 @@ struct boss_doomwalkerAI : public ScriptedAI
     void JustDied(Unit* Killer)
     {
         DoScriptText(SAY_DEATH, m_creature);
-        GameDataDatabase.PExecute("REPLACE INTO worldboss_respawn VALUES (%i, UNIX_TIMESTAMP())", m_creature->GetEntry());
+        uint64 respawn_time = urand(302400, 604800); // set the next respawn time between 3.5 to 7 days
+        GameDataDatabase.PExecute("REPLACE INTO worldboss_respawn VALUES (%i, %i)", m_creature->GetEntry(), respawn_time+time(0));
     }
 
     void EnterCombat(Unit *who)
@@ -120,6 +134,17 @@ struct boss_doomwalkerAI : public ScriptedAI
 
             Check_Timer = 2000;
         }else Check_Timer -= diff;
+
+
+        // Do not do anything during Earthquake channeling
+        // Fixed issue of Doomwalker autoattacking / lightning and interruping earthquake
+        if (Earthquake_Channel_Timer < diff) {
+            isEarthquake = false;
+        }
+        else if (isEarthquake) {
+            Earthquake_Channel_Timer -= diff;
+            return;
+        }
 
         //Spell Enrage, when hp <= 20% gain enrage
         if (((m_creature->GetHealth()*100)/ m_creature->GetMaxHealth()) <= 20)
@@ -158,7 +183,9 @@ struct boss_doomwalkerAI : public ScriptedAI
                 m_creature->RemoveAura(SPELL_ENRAGE, 0);
 
             DoCast(m_creature,SPELL_EARTHQUAKE);
+            isEarthquake = true;
             Enrage_Timer = 8000;
+            Earthquake_Channel_Timer = 8000;
             Quake_Timer = 30000 + rand()%25000;
         }else Quake_Timer -= diff;
 
@@ -183,6 +210,7 @@ struct boss_doomwalkerAI : public ScriptedAI
             DoCast(m_creature->getVictim(),SPELL_SUNDER_ARMOR);
             Armor_Timer = 10000 + rand()%15000;
         }else Armor_Timer -= diff;
+
 
         DoMeleeAttackIfReady();
     }

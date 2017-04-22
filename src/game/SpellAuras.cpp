@@ -4016,9 +4016,14 @@ void Aura::HandleModFear(bool apply, bool Real)
     if (!Real)
         return;
 
-    if (!apply && GetTarget()->HasAuraType(GetModifier()->m_auraname))
-        return;
-    
+    if (!apply)
+    {
+        m_target->SetDamageTakenWithActiveAuraType(SPELL_AURA_MOD_FEAR, 0);
+
+        if (GetTarget()->HasAuraType(GetModifier()->m_auraname))
+            return;
+    }
+
     if (GetTarget()->HasAuraTypeWithFamilyFlags(SPELL_AURA_PREVENTS_FLEEING,5,2147483648) || GetTarget()->HasAura(16231)) //Curse of Recklessnes
         return;
 
@@ -4340,6 +4345,9 @@ void Aura::HandleAuraModRoot(bool apply, bool Real)
     // only at real add/remove aura
     if (!Real)
         return;
+
+    if (!apply)
+        m_target->SetDamageTakenWithActiveAuraType(SPELL_AURA_MOD_ROOT, 0);
 
     if (apply)
         m_target->GetUnitStateMgr().PushAction(UNIT_ACTION_ROOT);
@@ -4792,7 +4800,7 @@ void Aura::HandleModMechanicImmunity(bool apply, bool Real)
     }
 
     // The Beast Within and Bestial Wrath - immunity
-    if (GetId() == 19574 || GetId() == 34471)
+    if (GetId() == 19574 || GetId() == 34471 || GetId() == 38484)
     {
         if (apply)
         {
@@ -5534,6 +5542,16 @@ void Aura::HandleAuraModResistance(bool apply, bool Real)
             case 7659:
             case 11717:
             case 27226:
+            case 770: // Faerie Fire 1-5
+            case 778:
+            case 9749:
+            case 9907:
+            case 26993:
+            case 16857: // Faerie Fire (Feral) 1-5
+            case 17390:
+            case 17391:
+            case 17392:
+            case 27011:
                 m_target->RemoveSpellsCausingAura(SPELL_AURA_MOD_STEALTH);
                 break;
     }
@@ -6751,7 +6769,12 @@ void Aura::HandleSpiritOfRedemption(bool apply, bool Real)
                 m_target->SetStandState(PLAYER_STATE_NONE);
         }
 
-        m_target->SetHealth(1);
+        // interrupt casting when entering Spirit of Redemption
+        if (m_target->IsNonMeleeSpellCasted(false))
+            m_target->InterruptNonMeleeSpells(false);
+
+        // set health and mana to maximum
+        m_target->SetHealth(m_target->GetMaxHealth());
         m_target->SetPower(POWER_MANA, m_target->GetMaxPower(POWER_MANA));
     }
     // die at aura end
@@ -7260,7 +7283,10 @@ void Aura::PeriodicTick()
             uint32 heal = pCaster->SpellHealingBonus(spellProto, uint32(new_damage * multiplier), DOT, pCaster);
 
             int32 gain = pCaster->ModifyHealth(heal);
-            pCaster->getHostilRefManager().threatAssist(pCaster, gain * 0.5f, spellProto);
+
+            // Health Leech effects do not generate healing aggro
+            if (m_modifier.m_auraname != SPELL_AURA_PERIODIC_LEECH)
+                pCaster->getHostilRefManager().threatAssist(pCaster, gain * 0.5f, spellProto);
 
             // change it
             pCaster->SendHealSpellLog(pCaster, spellProto->Id, heal);
@@ -8195,4 +8221,26 @@ void Aura::UnregisterSingleCastAura()
         }
         m_isSingleTargetAura = false;
     }
+}
+
+int32 Aura::CalcDispelChance(Unit* auraTarget, bool offensive) const
+{
+    // we assume that aura dispel chance is 100% on start
+    // need formula for level difference based chance
+    int32 resistChance = 0;
+
+    // Apply dispel mod from aura caster
+    if (Unit* caster = GetCaster())
+        if (Player* modOwner = caster->GetSpellModOwner())
+            modOwner->ApplySpellMod(GetId(), SPELLMOD_RESIST_DISPEL_CHANCE, resistChance);
+
+    // Dispel resistance from target SPELL_AURA_MOD_DISPEL_RESIST
+    // Only affects offensive dispels
+    if (offensive && auraTarget)
+        resistChance += auraTarget->GetTotalAuraModifier(SPELL_AURA_MOD_DISPEL_RESIST);
+
+    resistChance = resistChance < 0 ? 0 : resistChance;
+    resistChance = resistChance > 100 ? 100 : resistChance;
+
+    return 100 - resistChance;
 }
